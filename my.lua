@@ -25,8 +25,8 @@ end)
 local SPEED = 50
 local STEP = 4
 local PUNCH_DELAY = 0            -- без дополнительной задержки между сериями
+local HIT_DELAY = 0              -- задержка между ударами внутри одной серии
 local MULTI_PUNCH = 10           -- десять вызовов подряд в серии
-local MIN_SERIES_INTERVAL = 500  -- максимум две серии в секунду при delay = 0
 local PUNCH_WHILE_BLOCKING = true
 local BLOCK_SPEED_THRESHOLD = 0.5
 local AURA_RANGE = 10 -- studs; controls activation, not the game's hit reach
@@ -164,7 +164,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "mobile + pc v3.7", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "mobile + pc v3.9", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -401,8 +401,11 @@ local testTouchButton = create("TextButton", {
 }, combatPage)
 corner(testTouchButton, 9)
 
-local delayCard = makeCard(combatPage, "Punch delay (ms)", "Delay between attack series")
+local delayCard = makeCard(combatPage, "Auto attack delay (ms)", "Delay between automatic attack series; 0 = every frame")
 local delayMinus, delayBox, delayPlus = makeStepper(delayCard, tostring(PUNCH_DELAY))
+
+local hitDelayCard = makeCard(combatPage, "Hit delay (ms)", "Delay between hits inside one multi-punch; 0 = no extra wait")
+local hitDelayMinus, hitDelayBox, hitDelayPlus = makeStepper(hitDelayCard, tostring(HIT_DELAY))
 
 local multiCard = makeCard(combatPage, "Multi-punch count", "Number of punches per activation (1-10)", 94)
 local multiMinus, multiBox, multiPlus = makeStepper(multiCard, tostring(MULTI_PUNCH))
@@ -929,10 +932,13 @@ local function performMultiPunch()
     local ownBlockTracks = PUNCH_WHILE_BLOCKING and getOwnBlockTracks() or {}
 
     -- Меню уже закрывается пользователем один раз; не меняем его Visible в боевом цикле.
-    for _ = 1, MULTI_PUNCH do
+    for index = 1, MULTI_PUNCH do
         if not scriptAlive then return false, "Script stopped" end
         local sent, reason = punch()
         if not sent then return false, reason end
+        if HIT_DELAY > 0 and index < MULTI_PUNCH then
+            task.wait(HIT_DELAY / 1000)
+        end
     end
 
     -- Между отдельными вызовами серии нет дополнительного task.wait.
@@ -1015,7 +1021,7 @@ local function autoPunchLoop(generation)
             local selfBlocking = isBlocking(player.Character)
             local canPunch = (PUNCH_WHILE_BLOCKING or not selfBlocking)
                 and (not SKIP_BLOCKING_TARGETS or not enemyBlocking)
-            local seriesInterval = math.max(PUNCH_DELAY, MIN_SERIES_INTERVAL)
+            local seriesInterval = PUNCH_DELAY
             if canPunch and now - lastPunchTime >= seriesInterval then
                 local ok, sent, reason = pcall(performMultiPunch)
                 if not ok or not sent then
@@ -1027,7 +1033,7 @@ local function autoPunchLoop(generation)
                     task.wait(1)
                     if not scriptAlive or generation ~= autoGeneration then break end
                 else
-                    attackStatus.Text = string.format("%s | %d calls | limiter %dms", attackInputRoute, MULTI_PUNCH, seriesInterval)
+                    attackStatus.Text = string.format("%s | %d calls | auto %dms | hit %dms", attackInputRoute, MULTI_PUNCH, seriesInterval, HIT_DELAY)
                     attackStatus.TextColor3 = COLORS.muted
                 end
                 lastPunchTime = tick() * 1000
@@ -1039,8 +1045,13 @@ local function autoPunchLoop(generation)
             attackStatus.Text = "Waiting: no eligible target in range"
             attackStatus.TextColor3 = COLORS.muted
         end
-        -- Проверка цели не обязана выполняться все 60+ кадров в секунду.
-        task.wait(0.1)
+        if PUNCH_DELAY == 0 then
+            -- Нулевая задержка: новая серия на каждом кадре, но цикл всё равно
+            -- обязан вернуть управление движку, иначе Roblox полностью зависнет.
+            RunService.Heartbeat:Wait()
+        else
+            task.wait(math.min(PUNCH_DELAY / 1000, 0.05))
+        end
     end
 end
 
@@ -1061,9 +1072,9 @@ toggleAuto.Activated:Connect(function()
         task.spawn(function()
             local ok, message = pcall(autoPunchLoop, generation)
             if not ok and scriptAlive and isAutoOn and generation == autoGeneration then
-                attackStatus.Text = "ERROR v3.7: " .. tostring(message)
+                attackStatus.Text = "ERROR v3.9: " .. tostring(message)
                 attackStatus.TextColor3 = COLORS.danger
-                warn("[Nexus v3.7] " .. tostring(message))
+                warn("[Nexus v3.9] " .. tostring(message))
             end
         end)
     end
@@ -1074,9 +1085,18 @@ local function setDelay(value)
     if number then PUNCH_DELAY = math.clamp(math.floor(number), 0, 10000) end
     delayBox.Text = tostring(PUNCH_DELAY)
 end
-delayMinus.Activated:Connect(function() setDelay(PUNCH_DELAY - 50) end)
-delayPlus.Activated:Connect(function() setDelay(PUNCH_DELAY + 50) end)
+delayMinus.Activated:Connect(function() setDelay(PUNCH_DELAY - 10) end)
+delayPlus.Activated:Connect(function() setDelay(PUNCH_DELAY + 10) end)
 delayBox.FocusLost:Connect(function() setDelay(delayBox.Text) end)
+
+local function setHitDelay(value)
+    local number = tonumber(value)
+    if number then HIT_DELAY = math.clamp(math.floor(number), 0, 10000) end
+    hitDelayBox.Text = tostring(HIT_DELAY)
+end
+hitDelayMinus.Activated:Connect(function() setHitDelay(HIT_DELAY - 1) end)
+hitDelayPlus.Activated:Connect(function() setHitDelay(HIT_DELAY + 1) end)
+hitDelayBox.FocusLost:Connect(function() setHitDelay(hitDelayBox.Text) end)
 
 local function setMulti(value)
     local number = tonumber(value)
@@ -1244,4 +1264,4 @@ panel.BackgroundTransparency = 1
 tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus v3.7] Mobile + PC interface loaded")
+print("[Nexus v3.9] Independent auto/hit delays loaded")
