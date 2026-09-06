@@ -1,4 +1,4 @@
--- Modern responsive Speed / Fly / Auto-Punch UI
+-- Modern responsive Speed / Fly / Auto-Punch UI (исправленная версия)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -384,41 +384,53 @@ local function startFly()
         local camera = workspace.CurrentCamera
         if not camera then return end
         local move = Vector3.zero
-        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move += camera.CFrame.LookVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move -= camera.CFrame.LookVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move -= camera.CFrame.RightVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move += camera.CFrame.RightVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.yAxis end
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move -= Vector3.yAxis end
-        if move.Magnitude > 0 then root.CFrame += move.Unit * SPEED * deltaTime end
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.yAxis end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.yAxis end
+        if move.Magnitude > 0 then root.CFrame = root.CFrame + move.Unit * SPEED * deltaTime end
     end)
 end
 
 flyButton.Activated:Connect(function() if getFlyToggle() then stopFly() else startFly() end end)
 player.CharacterAdded:Connect(function(character)
     stopFly()
-    character:WaitForChild("Humanoid").WalkSpeed = SPEED
+    local hum = character:WaitForChild("Humanoid")
+    hum.WalkSpeed = SPEED
 end)
 
 -- Combat logic
 local isAutoOn = false
 local lastPunchTime = 0
+
 local function findPunchButton()
+    if not player.PlayerGui then return nil end
     for _, child in ipairs(player.PlayerGui:GetDescendants()) do
         if child:IsA("GuiButton") then
             local name = child.Name:lower()
-            if name:find("punch") or name:find("attack") or name:find("hit") or name:find("fight") then return child end
+            if name:find("punch") or name:find("attack") or name:find("hit") or name:find("fight") then
+                return child
+            end
         end
     end
+    return nil
 end
 
 local function punch()
     local button = findPunchButton()
-    if button then
-        firesignal(button.Activated)
-    elseif VirtualInputManager then
-        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+    if button and button:IsA("GuiButton") then
+        button:Click()
+        return
+    end
+    -- Fallback: try VirtualInputManager
+    if VirtualInputManager then
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+            task.wait(0.05)
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+        end)
     end
 end
 
@@ -442,11 +454,14 @@ local function getNearestEnemy()
     if not root then return nil end
     local nearest, distance = nil, math.huge
     for _, other in ipairs(Players:GetPlayers()) do
-        local otherCharacter = other ~= player and other.Character
+        if other == player then continue end
+        local otherCharacter = other.Character
         local otherRoot = otherCharacter and otherCharacter:FindFirstChild("HumanoidRootPart")
         if otherRoot then
             local currentDistance = (root.Position - otherRoot.Position).Magnitude
-            if currentDistance < distance then nearest, distance = otherCharacter, currentDistance end
+            if currentDistance < distance then
+                nearest, distance = otherCharacter, currentDistance
+            end
         end
     end
     return nearest
@@ -455,9 +470,10 @@ end
 local function autoPunchLoop()
     while isAutoOn do
         local enemy = getNearestEnemy()
-        local now = time() * 1000
+        local now = tick() * 1000
         if enemy and not isBlocking(enemy) and now - lastPunchTime >= PUNCH_DELAY then
-            punch(); lastPunchTime = now
+            punch()
+            lastPunchTime = now
         end
         task.wait(0.05)
     end
@@ -466,7 +482,10 @@ end
 toggleAuto.Activated:Connect(function()
     isAutoOn = not getAutoToggle()
     setAutoToggle(isAutoOn)
-    if isAutoOn then lastPunchTime = 0; task.spawn(autoPunchLoop) end
+    if isAutoOn then
+        lastPunchTime = 0
+        task.spawn(autoPunchLoop)
+    end
 end)
 
 local function setDelay(value)
