@@ -1,13 +1,12 @@
--- Script for Boxing Beta: Auto-Punch when opponent stops blocking
--- Credit: Based on your request
-
+-- Auto-Punch для Boxing Beta (исправленная версия)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
 -- ====== НАСТРОЙКИ ======
-local PUNCH_DELAY = 500 -- Задержка между ударами в миллисекундах (по умолчанию 500 мс)
+local PUNCH_DELAY = 500   -- задержка между ударами (мс)
+local BLOCK_SPEED = 0.5   -- порог скорости, при котором считается, что игрок блокирует
 
 -- ====== GUI ======
 local gui = Instance.new("ScreenGui")
@@ -111,53 +110,26 @@ local function getNearestEnemy()
 end
 
 local function isBlocking(character)
-    -- Пытаемся найти анимацию блока или специфичный для игры атрибут.
-    -- В Boxing Beta блок, скорее всего, активирует анимацию или изменяет Humanoid.
-    -- Проверяем наличие анимации "Block" или состояние Humanoid.
     local humanoid = character and character:FindFirstChild("Humanoid")
     if not humanoid then return false end
-
-    -- Проверяем, не бежит ли персонаж (во время блока бег недоступен) [reference:0]
-    if humanoid.MoveDirection.Magnitude > 0.5 then
-        return false
-    end
-
-    -- Проверяем анимации (это самый надежный способ, если анимация блока есть)
-    local animator = humanoid:FindFirstChild("Animator")
-    if animator then
-        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-            if track.Animation and track.Animation.Name and string.lower(track.Animation.Name):find("block") then
-                return true
-            end
-        end
-    end
-
-    -- Альтернатива: проверка по значению WalkSpeed (при блоке она может быть 0)
-    if humanoid.WalkSpeed < 0.5 then
+    if humanoid.WalkSpeed <= BLOCK_SPEED then
         return true
     end
-
     return false
 end
 
+-- ИСПРАВЛЕННАЯ ФУНКЦИЯ УДАРА
 local function punch()
-    local character = player.Character
-    if not character then return end
-
-    -- Здесь нужно вызвать действие удара.
-    -- В Boxing Beta удар, вероятно, привязан к клавише или кнопке мыши.
-    -- Имитируем нажатие левой кнопки мыши.
-    mouse = player:GetMouse()
-    if mouse then
-        mouse.Button1Down:Fire()
-        task.wait(0.05)
-        mouse.Button1Up:Fire()
-    end
-
-    -- Альтернатива: если удар привязан к клавише (например, Q или E)
-    -- UserInputService:SetKeyDown(Enum.KeyCode.Q)
+    -- Вариант 1: через клавишу Q (замени на нужную)
+    UserInputService:SetKeyDown(Enum.KeyCode.Q)
+    task.wait(0.05)
+    UserInputService:SetKeyUp(Enum.KeyCode.Q)
+    
+    -- Вариант 2: через левую кнопку мыши (раскомментируй, если нужен)
+    -- local input = {UserInputType = Enum.UserInputType.MouseButton1}
+    -- UserInputService:InputBegan(input, false)
     -- task.wait(0.05)
-    -- UserInputService:SetKeyUp(Enum.KeyCode.Q)
+    -- UserInputService:InputEnded(input, false)
 end
 
 local function autoPunchLoop()
@@ -170,7 +142,7 @@ local function autoPunchLoop()
                 lastPunchTime = currentTime
             end
         end
-        task.wait(0.05) -- Проверка каждые 50 мс для большей точности
+        task.wait(0.05)
     end
 end
 
@@ -198,5 +170,4 @@ delayBox.FocusLost:Connect(function()
     end
 end)
 
--- Базовая проверка при запуске
-print("Auto-Punch script loaded. Press 'Вкл' to start.")
+print("[Auto-Punch] Скрипт загружен. Нажми 'Вкл'.")
