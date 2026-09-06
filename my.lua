@@ -1,15 +1,12 @@
--- Скорость + ПОЛЁТ (универсальный скрипт для инжектора)
+-- Скорость + ПОЛЁТ (без ограничений)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
 -- ====== НАСТРОЙКИ ======
-local SPEED = 50          -- скорость бега
-local FLY_SPEED = 50      -- скорость полёта
-local MIN_SPEED = 4
-local MAX_SPEED = 100
-local STEP = 4
+local SPEED = 50          -- скорость (бег и полёт)
+local STEP = 4            -- шаг кнопок +/-
 
 -- ====== GUI ======
 local gui = Instance.new("ScreenGui")
@@ -91,7 +88,7 @@ hint.Font = Enum.Font.Gotham
 hint.TextSize = 13
 hint.Parent = panel
 
--- ====== ЛОГИКА СКОРОСТИ ======
+-- ====== ЛОГИКА СКОРОСТИ (без ограничений) ======
 local function getHumanoid()
 	local character = player.Character
 	if not character then return nil end
@@ -99,7 +96,11 @@ local function getHumanoid()
 end
 
 local function setSpeed(newSpeed)
-	SPEED = math.clamp(math.round(newSpeed), MIN_SPEED, MAX_SPEED)
+	-- Принимаем любое число (в том числе дробное)
+	local val = tonumber(newSpeed)
+	if val then
+		SPEED = val
+	end
 	valueBox.Text = tostring(SPEED)
 	local hum = getHumanoid()
 	if hum then
@@ -110,10 +111,10 @@ end
 decrease.Activated:Connect(function() setSpeed(SPEED - STEP) end)
 increase.Activated:Connect(function() setSpeed(SPEED + STEP) end)
 valueBox.FocusLost:Connect(function()
-	setSpeed(tonumber(valueBox.Text) or SPEED)
+	setSpeed(valueBox.Text)
 end)
 
--- Постоянное обновление скорости
+-- Постоянное обновление скорости (для борьбы со сбросами)
 RunService.Heartbeat:Connect(function()
 	local hum = getHumanoid()
 	if hum and hum.WalkSpeed ~= SPEED then
@@ -129,7 +130,7 @@ end)
 task.wait(0.5)
 setSpeed(SPEED)
 
--- ====== ЛОГИКА ПОЛЁТА ======
+-- ====== ЛОГИКА ПОЛЁТА (использует ту же SPEED) ======
 local flying = false
 local flyBodyVelocity, flyBodyGyro
 local flyConnection
@@ -169,7 +170,7 @@ local function startFly()
 		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDirection = moveDirection - up end
 
 		if moveDirection.Magnitude > 0 then
-			moveDirection = moveDirection.Unit * FLY_SPEED
+			moveDirection = moveDirection.Unit * SPEED   -- используем SPEED для полёта
 		else
 			moveDirection = Vector3.new(0, 0, 0)
 		end
