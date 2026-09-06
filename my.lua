@@ -1,5 +1,5 @@
 -- Nexus UI v2: Speed, Fly, Auto-Punch (Multi), ESP with Color Picker
--- Fixed: mobile joystick conflict, punch through block, multi-hit
+-- v3.7 restored; attack requests while blocking do not guarantee server damage.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -25,8 +25,8 @@ end)
 local SPEED = 50
 local STEP = 4
 local PUNCH_DELAY = 0            -- без дополнительной задержки между сериями
-local HIT_DELAY = 0              -- задержка между ударами внутри одной серии
 local MULTI_PUNCH = 10           -- десять вызовов подряд в серии
+local MIN_SERIES_INTERVAL = 500  -- максимум две серии в секунду при delay = 0
 local PUNCH_WHILE_BLOCKING = true
 local BLOCK_SPEED_THRESHOLD = 0.5
 local AURA_RANGE = 10 -- studs; controls activation, not the game's hit reach
@@ -164,7 +164,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "mobile + pc v4.0", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "mobile + pc v3.7", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -401,16 +401,13 @@ local testTouchButton = create("TextButton", {
 }, combatPage)
 corner(testTouchButton, 9)
 
-local delayCard = makeCard(combatPage, "Auto attack delay (ms)", "Delay between automatic attack series; 0 = every frame")
+local delayCard = makeCard(combatPage, "Punch delay (ms)", "Delay between attack series")
 local delayMinus, delayBox, delayPlus = makeStepper(delayCard, tostring(PUNCH_DELAY))
-
-local hitDelayCard = makeCard(combatPage, "Hit delay (ms)", "Delay between hits inside one multi-punch; 0 = no extra wait")
-local hitDelayMinus, hitDelayBox, hitDelayPlus = makeStepper(hitDelayCard, tostring(HIT_DELAY))
 
 local multiCard = makeCard(combatPage, "Multi-punch count", "Number of punches per activation (1-10)", 94)
 local multiMinus, multiBox, multiPlus = makeStepper(multiCard, tostring(MULTI_PUNCH))
 
-local blockCard = makeCard(combatPage, "Punch while blocking", "Allow punching even when you are blocking")
+local blockCard = makeCard(combatPage, "Punch while blocking", "Send attacks while blocking; server rules still apply")
 local blockToggle, setBlockToggle, getBlockToggle = makeToggle(blockCard)
 
 local rangeCard = makeCard(combatPage, "Aura range (studs)", "Auto punch activation distance", 94)
@@ -701,7 +698,6 @@ local touchBusy = false
 local touchFailure
 local touchTesting = false
 local syntheticTouchId = 912837
-local sendTouchToButton
 local selectingPunch = false
 local selectionConnections = {}
 local selectionGeneration = 0
@@ -763,36 +759,11 @@ local function findPunchButton()
     discoveredPunchButton = nil
     if time() < nextPunchButtonScan then return nil end
     nextPunchButtonScan = time() + 2
-    local fallback, fallbackScore
-    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800, 600)
     for _, child in ipairs(player.PlayerGui:GetDescendants()) do
         if child:IsA("GuiButton") and not buttonVisibilityIssue(child) then
             local name = child.Name:lower()
             if name:find("punch") or name:find("attack") or name:find("hit") or name:find("fight") then
                 discoveredPunchButton = child
-                return child
-            end
-            -- В Boxing Beta кнопка кулака может называться просто "button".
-            local center = child.AbsolutePosition + child.AbsoluteSize / 2
-            if center.X > viewport.X * 0.68 and center.Y > viewport.Y * 0.55 then
-                local score = center.Y / math.max(viewport.Y, 1) +
-                    math.min(child.AbsoluteSize.X, child.AbsoluteSize.Y) / 250
-                if not fallbackScore or score > fallbackScore then
-                    fallback, fallbackScore = child, score
-                end
-            end
-        end
-    end
-    discoveredPunchButton = fallback
-    return fallback
-end
-
-local function findBlockButton()
-    if not player.PlayerGui then return nil end
-    for _, child in ipairs(player.PlayerGui:GetDescendants()) do
-        if child:IsA("GuiButton") then
-            local name = child.Name:lower()
-            if name:find("block") or name:find("guard") or name:find("defend") then
                 return child
             end
         end
@@ -825,10 +796,6 @@ local function activateGuiButton(button)
         return ok and result, ok and nil or result
     end
 
-    if UserInputService.TouchEnabled and sendTouchToButton then
-        return sendTouchToButton(button)
-    end
-
     if type(firesignal) == "function" then
         local ok, message = pcall(function() firesignal(button.Activated) end)
         if ok then return true end
@@ -837,37 +804,29 @@ local function activateGuiButton(button)
     return false, "No supported attack input on this device (firesignal unavailable)"
 end
 
-sendTouchToButton = function(object, offset)
+local function sendSelectedTouch()
+    if touchFailure then return false, touchFailure end
     if touchBusy then return false, "Touch already in progress" end
+    if not selectedTouchOffset then return false, "Select using a real screen tap first" end
     if panel.Visible then return false, "Hide Nexus with X before touch attacks" end
-    local issue = buttonVisibilityIssue(object)
-    if issue then return false, issue end
-    local point = object.AbsolutePosition + (offset or object.AbsoluteSize / 2)
+    local object, issue = resolveSelectedButton()
+    if not object then return false, issue end
+    local point = object.AbsolutePosition + selectedTouchOffset
     touchBusy = true
-    syntheticTouchId = syntheticTouchId + 1
-    if syntheticTouchId > 913837 then syntheticTouchId = 912838 end
-    local currentTouchId = syntheticTouchId
     local pressed, pressError = pcall(function()
-        VirtualInputManager:SendTouchEvent(currentTouchId, Enum.UserInputState.Begin.Value, point.X, point.Y)
+        VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.Begin.Value, point.X, point.Y)
     end)
     if pressed then RunService.Heartbeat:Wait() end
     -- Always attempt release, even if the menu was destroyed while waiting.
     local released, releaseError = pcall(function()
-        VirtualInputManager:SendTouchEvent(currentTouchId, Enum.UserInputState.End.Value, point.X, point.Y)
+        VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.End.Value, point.X, point.Y)
     end)
     touchBusy = false
     if not pressed or not released then
         touchFailure = "Touch API rejected: " .. tostring(not pressed and pressError or releaseError)
         return false, touchFailure
     end
-    touchFailure = nil
     return true
-end
-
-local function sendSelectedTouch()
-    local object, issue = resolveSelectedButton()
-    if not object then return false, issue end
-    return sendTouchToButton(object, selectedTouchOffset)
 end
 
 testTouchButton.Activated:Connect(function()
@@ -894,33 +853,26 @@ end)
 local attackInputRoute = "unknown"
 local function punch()
     if UserInputService.TouchEnabled and selectedButtonPath then
-        local resolved = resolveSelectedButton()
-        if resolved then
-            attackInputRoute = "Touch: " .. selectedButtonPath
-            return sendTouchToButton(resolved, selectedTouchOffset)
-        end
-        selectedPunchButton = nil
-        selectedButtonPath = nil
-        selectedButtonClass = nil
-        selectedTouchOffset = nil
+        attackInputRoute = "Touch: " .. selectedButtonPath
+        return sendSelectedTouch()
     end
     if selectedPunchButton then
         if not selectedPunchButton:IsDescendantOf(player.PlayerGui) then
             selectedPunchButton = nil
-        else
-            attackInputRoute = "Selected GUI: " .. selectedPunchButton.Name
-            if UserInputService.TouchEnabled then
-                attackInputRoute = "Touch: " .. selectedPunchButton.Name
-                return sendTouchToButton(selectedPunchButton, selectedTouchOffset)
-            end
-            return activateGuiButton(selectedPunchButton)
+            return false, "Selected button was recreated; select the punch button again"
         end
+        attackInputRoute = "Selected GUI: " .. selectedPunchButton.Name
+        if UserInputService.TouchEnabled then
+            attackInputRoute = "Touch: " .. selectedPunchButton.Name
+            return sendSelectedTouch()
+        end
+        return activateGuiButton(selectedPunchButton)
     end
     -- Tool activation does not inject mouse input or change the touch controller.
     -- Equip the fighting tool before enabling Auto punch.
     local button = findPunchButton()
     if button and button:IsA("GuiButton") then
-        attackInputRoute = (UserInputService.TouchEnabled and "Touch GUI: " or "GUI: ") .. button.Name
+        attackInputRoute = "GUI: " .. button.Name
         return activateGuiButton(button)
     end
 
@@ -945,59 +897,19 @@ local function punch()
     return false, "No equipped Tool or named attack button. Equip fists first."
 end
 
-local function getOwnBlockTracks()
-    local tracks = {}
-    local humanoid = getHumanoid()
-    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
-    if animator then
-        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-            local animation = track.Animation
-            if animation and animation.Name:lower():find("block") then
-                table.insert(tracks, track)
-            end
-        end
-    end
-    return tracks
-end
-
 local function performMultiPunch()
-    local ownBlockTracks = PUNCH_WHILE_BLOCKING and getOwnBlockTracks() or {}
 
     -- Меню уже закрывается пользователем один раз; не меняем его Visible в боевом цикле.
-    for index = 1, MULTI_PUNCH do
+    for _ = 1, MULTI_PUNCH do
         if not scriptAlive then return false, "Script stopped" end
         local sent, reason = punch()
         if not sent then return false, reason end
-        if HIT_DELAY > 0 and index < MULTI_PUNCH then
-            task.wait(HIT_DELAY / 1000)
-        end
     end
 
     -- Между отдельными вызовами серии нет дополнительного task.wait.
     -- Частота новых серий ограничивается отдельно в autoPunchLoop.
 
-    -- Удары уже отправлены. Отдельно удерживаем ранее активный собственный блок.
-    if #ownBlockTracks > 0 then
-        task.spawn(function()
-            local restoreUntil = time() + 0.2
-            local blockWasRestored = false
-            while scriptAlive and time() < restoreUntil do
-                for _, track in ipairs(ownBlockTracks) do
-                    if not track.IsPlaying then
-                        pcall(function() track:Play(0) end)
-                        blockWasRestored = true
-                    end
-                end
-                task.wait()
-            end
-
-            -- Если игра полностью остановила блок, повторно активируем найденную кнопку.
-            if scriptAlive and blockWasRestored then
-                local blockButton = findBlockButton()
-                if blockButton then activateGuiButton(blockButton) end
-            end
-        end)
-    end
+    -- Do not toggle the block button or replay its animation after attacks.
     return true
 end
 
@@ -1053,7 +965,7 @@ local function autoPunchLoop(generation)
             local selfBlocking = isBlocking(player.Character)
             local canPunch = (PUNCH_WHILE_BLOCKING or not selfBlocking)
                 and (not SKIP_BLOCKING_TARGETS or not enemyBlocking)
-            local seriesInterval = PUNCH_DELAY
+            local seriesInterval = math.max(PUNCH_DELAY, MIN_SERIES_INTERVAL)
             if canPunch and now - lastPunchTime >= seriesInterval then
                 local ok, sent, reason = pcall(performMultiPunch)
                 if not ok or not sent then
@@ -1065,7 +977,7 @@ local function autoPunchLoop(generation)
                     task.wait(1)
                     if not scriptAlive or generation ~= autoGeneration then break end
                 else
-                    attackStatus.Text = string.format("%s | %d calls | auto %dms | hit %dms", attackInputRoute, MULTI_PUNCH, seriesInterval, HIT_DELAY)
+                    attackStatus.Text = string.format("%s | %d calls | limiter %dms", attackInputRoute, MULTI_PUNCH, seriesInterval)
                     attackStatus.TextColor3 = COLORS.muted
                 end
                 lastPunchTime = tick() * 1000
@@ -1077,13 +989,8 @@ local function autoPunchLoop(generation)
             attackStatus.Text = "Waiting: no eligible target in range"
             attackStatus.TextColor3 = COLORS.muted
         end
-        if PUNCH_DELAY == 0 then
-            -- Нулевая задержка: новая серия на каждом кадре, но цикл всё равно
-            -- обязан вернуть управление движку, иначе Roblox полностью зависнет.
-            RunService.Heartbeat:Wait()
-        else
-            task.wait(math.min(PUNCH_DELAY / 1000, 0.05))
-        end
+        -- Проверка цели не обязана выполняться все 60+ кадров в секунду.
+        task.wait(0.1)
     end
 end
 
@@ -1099,19 +1006,14 @@ toggleAuto.Activated:Connect(function()
     attackStatus.Text = isAutoOn and "Checking attack input..." or "Auto punch: OFF"
     attackStatus.TextColor3 = COLORS.muted
     if isAutoOn then
-        -- Любая разовая ошибка touch больше не блокирует последующие включения.
-        touchFailure = nil
-        touchBusy = false
-        discoveredPunchButton = nil
-        nextPunchButtonScan = 0
         lastPunchTime = 0
         local generation = autoGeneration
         task.spawn(function()
             local ok, message = pcall(autoPunchLoop, generation)
             if not ok and scriptAlive and isAutoOn and generation == autoGeneration then
-                attackStatus.Text = "ERROR v4.0: " .. tostring(message)
+                attackStatus.Text = "ERROR v3.7: " .. tostring(message)
                 attackStatus.TextColor3 = COLORS.danger
-                warn("[Nexus v4.0] " .. tostring(message))
+                warn("[Nexus v3.7] " .. tostring(message))
             end
         end)
     end
@@ -1122,18 +1024,9 @@ local function setDelay(value)
     if number then PUNCH_DELAY = math.clamp(math.floor(number), 0, 10000) end
     delayBox.Text = tostring(PUNCH_DELAY)
 end
-delayMinus.Activated:Connect(function() setDelay(PUNCH_DELAY - 10) end)
-delayPlus.Activated:Connect(function() setDelay(PUNCH_DELAY + 10) end)
+delayMinus.Activated:Connect(function() setDelay(PUNCH_DELAY - 50) end)
+delayPlus.Activated:Connect(function() setDelay(PUNCH_DELAY + 50) end)
 delayBox.FocusLost:Connect(function() setDelay(delayBox.Text) end)
-
-local function setHitDelay(value)
-    local number = tonumber(value)
-    if number then HIT_DELAY = math.clamp(math.floor(number), 0, 10000) end
-    hitDelayBox.Text = tostring(HIT_DELAY)
-end
-hitDelayMinus.Activated:Connect(function() setHitDelay(HIT_DELAY - 1) end)
-hitDelayPlus.Activated:Connect(function() setHitDelay(HIT_DELAY + 1) end)
-hitDelayBox.FocusLost:Connect(function() setHitDelay(hitDelayBox.Text) end)
 
 local function setMulti(value)
     local number = tonumber(value)
@@ -1301,4 +1194,4 @@ panel.BackgroundTransparency = 1
 tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus v4.0] Auto Punch self-healing input loaded")
+print("[Nexus v3.7] Mobile + PC interface loaded")
