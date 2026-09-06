@@ -26,6 +26,7 @@ local SPEED = 50
 local STEP = 4
 local PUNCH_DELAY = 0            -- без дополнительной задержки между сериями
 local MULTI_PUNCH = 10           -- десять вызовов подряд в серии
+local MIN_SERIES_INTERVAL = 200  -- защита от сотен событий ввода в секунду
 local PUNCH_WHILE_BLOCKING = true
 local BLOCK_SPEED_THRESHOLD = 0.5
 local AURA_RANGE = 10 -- studs; controls activation, not the game's hit reach
@@ -163,7 +164,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "mobile + pc v3.5", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "mobile + pc v3.6", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -774,15 +775,21 @@ local function findBlockButton()
     return nil
 end
 
+local overlayInputDepth = 0
 local function withoutNexusOverlay(callback)
+    if overlayInputDepth > 0 then
+        return pcall(callback)
+    end
     local panelWasVisible = panel.Visible
     local dimWasVisible = dim.Visible
+    overlayInputDepth = overlayInputDepth + 1
     panel.Visible = false
     dim.Visible = false
-    local ok, result = pcall(callback)
+    local results = table.pack(pcall(callback))
     panel.Visible = panelWasVisible
     dim.Visible = dimWasVisible
-    return ok, result
+    overlayInputDepth = math.max(overlayInputDepth - 1, 0)
+    return table.unpack(results, 1, results.n)
 end
 
 local function sendMouseClick(point)
@@ -929,12 +936,20 @@ end
 local function performMultiPunch()
     local ownBlockTracks = PUNCH_WHILE_BLOCKING and getOwnBlockTracks() or {}
 
-    -- Намеренно без task.wait: вся серия отправляется в одном кадре.
-    for _ = 1, MULTI_PUNCH do
-        if not scriptAlive then return false end
-        local sent, reason = punch()
-        if not sent then return false, reason end
-    end
+    -- Убираем Nexus из hit-test один раз на всю серию, а не 10 раз подряд.
+    local callOk, burstSent, burstReason = withoutNexusOverlay(function()
+        for _ = 1, MULTI_PUNCH do
+            if not scriptAlive then return false, "Script stopped" end
+            local sent, reason = punch()
+            if not sent then return false, reason end
+        end
+        return true
+    end)
+    if not callOk then return false, burstSent end
+    if not burstSent then return false, burstReason end
+
+    -- Между отдельными вызовами серии нет дополнительного task.wait.
+    -- Частота новых серий ограничивается отдельно в autoPunchLoop.
 
     -- Удары уже отправлены. Отдельно удерживаем ранее активный собственный блок.
     if #ownBlockTracks > 0 then
@@ -1007,7 +1022,8 @@ local function autoPunchLoop(generation)
             local selfBlocking = isBlocking(player.Character)
             local canPunch = (PUNCH_WHILE_BLOCKING or not selfBlocking)
                 and (not SKIP_BLOCKING_TARGETS or not enemyBlocking)
-            if canPunch and now - lastPunchTime >= PUNCH_DELAY then
+            local seriesInterval = math.max(PUNCH_DELAY, MIN_SERIES_INTERVAL)
+            if canPunch and now - lastPunchTime >= seriesInterval then
                 local ok, sent, reason = pcall(performMultiPunch)
                 if not ok or not sent then
                     local detail = not ok and tostring(sent) or tostring(reason or "Unknown attack input error")
@@ -1018,10 +1034,10 @@ local function autoPunchLoop(generation)
                     task.wait(1)
                     if not scriptAlive or generation ~= autoGeneration then break end
                 else
-                    attackStatus.Text = string.format("%s | %d calls; damage NOT verified", attackInputRoute, MULTI_PUNCH)
+                    attackStatus.Text = string.format("%s | %d calls | limiter %dms", attackInputRoute, MULTI_PUNCH, seriesInterval)
                     attackStatus.TextColor3 = COLORS.muted
                 end
-                lastPunchTime = now
+                lastPunchTime = tick() * 1000
             elseif not canPunch then
                 attackStatus.Text = "Waiting: block filter"
                 attackStatus.TextColor3 = COLORS.muted
@@ -1030,8 +1046,8 @@ local function autoPunchLoop(generation)
             attackStatus.Text = "Waiting: no eligible target in range"
             attackStatus.TextColor3 = COLORS.muted
         end
-        -- Отдаём управление движку: при нулевой задержке следующая серия на следующем кадре.
-        RunService.Heartbeat:Wait()
+        -- Проверка цели не обязана выполняться все 60+ кадров в секунду.
+        task.wait(0.03)
     end
 end
 
@@ -1052,9 +1068,9 @@ toggleAuto.Activated:Connect(function()
         task.spawn(function()
             local ok, message = pcall(autoPunchLoop, generation)
             if not ok and scriptAlive and isAutoOn and generation == autoGeneration then
-                attackStatus.Text = "ERROR v3.5: " .. tostring(message)
+                attackStatus.Text = "ERROR v3.6: " .. tostring(message)
                 attackStatus.TextColor3 = COLORS.danger
-                warn("[Nexus v3.5] " .. tostring(message))
+                warn("[Nexus v3.6] " .. tostring(message))
             end
         end)
     end
@@ -1235,4 +1251,4 @@ panel.BackgroundTransparency = 1
 tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus v3.5] Mobile + PC interface loaded")
+print("[Nexus v3.6] Mobile + PC interface loaded")
