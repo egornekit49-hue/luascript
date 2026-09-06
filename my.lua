@@ -1,24 +1,24 @@
--- Эксплойт-скрипт для изменения скорости ТОЛЬКО СВОЕГО персонажа
--- Работает в любой игре, защищён от сброса
-
+-- Скорость + ПОЛЁТ (универсальный скрипт для инжектора)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
-local SPEED = 50  -- твоя желаемая скорость
+-- ====== НАСТРОЙКИ ======
+local SPEED = 50          -- скорость бега
+local FLY_SPEED = 50      -- скорость полёта (можно менять)
 local MIN_SPEED = 4
 local MAX_SPEED = 100
 local STEP = 4
 
--- Создаём GUI в CoreGui (не удаляется играми)
+-- ====== GUI ======
 local gui = Instance.new("ScreenGui")
 gui.Name = "SpeedControlGui"
-gui.Parent = game:GetService("CoreGui")  -- вместо PlayerGui
+gui.Parent = game:GetService("CoreGui")
 
--- Панель управления (такая же как была)
 local panel = Instance.new("Frame")
-panel.Size = UDim2.fromOffset(250, 145)
-panel.Position = UDim2.new(0, 20, 1, -165)
+panel.Size = UDim2.fromOffset(280, 200)  -- увеличил высоту
+panel.Position = UDim2.new(0, 20, 1, -220)
 panel.BackgroundColor3 = Color3.fromRGB(25, 28, 36)
 panel.BorderSizePixel = 0
 panel.Parent = gui
@@ -28,18 +28,19 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -24, 0, 32)
 title.Position = UDim2.fromOffset(12, 8)
 title.BackgroundTransparency = 1
-title.Text = "Скорость бега"
+title.Text = "Скорость + Полет"
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 19
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = panel
 
-local function createButton(name, text, x)
+-- Кнопки скорости
+local function createButton(name, text, x, y)
 	local button = Instance.new("TextButton")
 	button.Name = name
 	button.Size = UDim2.fromOffset(50, 42)
-	button.Position = UDim2.fromOffset(x, 52)
+	button.Position = UDim2.fromOffset(x, y)
 	button.BackgroundColor3 = Color3.fromRGB(65, 104, 190)
 	button.BorderSizePixel = 0
 	button.Text = text
@@ -51,8 +52,8 @@ local function createButton(name, text, x)
 	return button
 end
 
-local decrease = createButton("Decrease", "-", 20)
-local increase = createButton("Increase", "+", 180)
+local decrease = createButton("Decrease", "-", 20, 52)
+local increase = createButton("Increase", "+", 180, 52)
 
 local valueBox = Instance.new("TextBox")
 valueBox.Size = UDim2.fromOffset(90, 42)
@@ -67,25 +68,37 @@ valueBox.ClearTextOnFocus = false
 valueBox.Parent = panel
 Instance.new("UICorner", valueBox).CornerRadius = UDim.new(0, 7)
 
+-- Кнопка включения полёта
+local flyButton = Instance.new("TextButton")
+flyButton.Name = "FlyButton"
+flyButton.Size = UDim2.fromOffset(100, 36)
+flyButton.Position = UDim2.fromOffset(90, 108)
+flyButton.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
+flyButton.BorderSizePixel = 0
+flyButton.Text = "Fly: OFF"
+flyButton.TextColor3 = Color3.new(1, 1, 1)
+flyButton.Font = Enum.Font.GothamBold
+flyButton.TextSize = 18
+flyButton.Parent = panel
+Instance.new("UICorner", flyButton).CornerRadius = UDim.new(0, 7)
+
 local hint = Instance.new("TextLabel")
 hint.Size = UDim2.new(1, -24, 0, 26)
-hint.Position = UDim2.fromOffset(12, 108)
+hint.Position = UDim2.fromOffset(12, 158)
 hint.BackgroundTransparency = 1
-hint.Text = "Допустимый диапазон: 4–100"
+hint.Text = "WASD - движение, Пробел - вверх, Shift - вниз"
 hint.TextColor3 = Color3.fromRGB(185, 190, 205)
 hint.Font = Enum.Font.Gotham
 hint.TextSize = 13
 hint.Parent = panel
 
--- Функция для получения твоего Humanoid с защитой от ошибок
+-- ====== ЛОГИКА СКОРОСТИ ======
 local function getHumanoid()
 	local character = player.Character
 	if not character then return nil end
-	local humanoid = character:FindFirstChild("Humanoid")
-	return humanoid
+	return character:FindFirstChild("Humanoid")
 end
 
--- Установка скорости с защитой
 local function setSpeed(newSpeed)
 	SPEED = math.clamp(math.round(newSpeed), MIN_SPEED, MAX_SPEED)
 	valueBox.Text = tostring(SPEED)
@@ -95,20 +108,13 @@ local function setSpeed(newSpeed)
 	end
 end
 
--- Обработка кнопок
-decrease.Activated:Connect(function()
-	setSpeed(SPEED - STEP)
-end)
-
-increase.Activated:Connect(function()
-	setSpeed(SPEED + STEP)
-end)
-
+decrease.Activated:Connect(function() setSpeed(SPEED - STEP) end)
+increase.Activated:Connect(function() setSpeed(SPEED + STEP) end)
 valueBox.FocusLost:Connect(function()
 	setSpeed(tonumber(valueBox.Text) or SPEED)
 end)
 
--- Постоянное принудительное обновление скорости (бьёт сбросы)
+-- Постоянное обновление скорости
 RunService.Heartbeat:Connect(function()
 	local hum = getHumanoid()
 	if hum and hum.WalkSpeed ~= SPEED then
@@ -116,19 +122,111 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
--- При перерождении персонажа – ставим скорость
 player.CharacterAdded:Connect(function(character)
 	local hum = character:WaitForChild("Humanoid")
 	hum.WalkSpeed = SPEED
 end)
 
--- Устанавливаем начальную скорость
-task.wait(0.5) -- даём игре время загрузить персонажа
+task.wait(0.5)
 setSpeed(SPEED)
 
--- Опционально: если хочешь скрыть GUI, нажми F9 (можно добавить)
--- game:GetService("UserInputService").InputBegan:Connect(function(input)
---     if input.KeyCode == Enum.KeyCode.F9 then
---         gui.Enabled = not gui.Enabled
---     end
--- end)
+-- ====== ЛОГИКА ПОЛЁТА ======
+local flying = false
+local flyBodyVelocity, flyBodyGyro
+local flyConnection
+
+local function startFly()
+	local character = player.Character
+	if not character then return end
+	local root = character:FindFirstChild("HumanoidRootPart")
+	local hum = character:FindFirstChild("Humanoid")
+	if not root or not hum then return end
+
+	-- Отключаем гравитацию (чтобы не падать)
+	hum.PlatformStand = true  -- часто работает как "отключить гравитацию"
+
+	-- BodyVelocity для движения
+	flyBodyVelocity = Instance.new("BodyVelocity")
+	flyBodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+	flyBodyVelocity.Parent = root
+
+	-- BodyGyro для управления поворотом (сохраняет ориентацию по камере)
+	flyBodyGyro = Instance.new("BodyGyro")
+	flyBodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+	flyBodyGyro.Parent = root
+
+	-- Обновление направления полёта
+	local function updateFly()
+		if not root or not flyBodyVelocity then return end
+		local camera = workspace.CurrentCamera
+		if not camera then return end
+
+		-- Получаем направления от камеры
+		local forward = camera.CFrame.LookVector
+		local right = camera.CFrame.RightVector
+		local up = camera.CFrame.UpVector
+
+		-- Обрабатываем нажатые клавиши
+		local moveDirection = Vector3.new(0, 0, 0)
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDirection = moveDirection + forward end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDirection = moveDirection - forward end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDirection = moveDirection - right end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDirection = moveDirection + right end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDirection = moveDirection + up end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDirection = moveDirection - up end
+
+		-- Если нет движения – останавливаемся
+		if moveDirection.Magnitude > 0 then
+			moveDirection = moveDirection.Unit * FLY_SPEED
+		else
+			moveDirection = Vector3.new(0, 0, 0)
+		end
+
+		-- Применяем скорость
+		flyBodyVelocity.Velocity = moveDirection
+
+		-- Поворачиваем тело в сторону движения (если есть движение)
+		if moveDirection.Magnitude > 0.1 then
+			local targetCFrame = CFrame.lookAt(root.Position, root.Position + moveDirection)
+			flyBodyGyro.CFrame = targetCFrame
+		end
+	end
+
+	-- Запускаем обновление в каждом кадре
+	flyConnection = RunService.Heartbeat:Connect(updateFly)
+	flying = true
+	flyButton.Text = "Fly: ON"
+	flyButton.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+end
+
+local function stopFly()
+	if flyConnection then flyConnection:Disconnect() flyConnection = nil end
+	if flyBodyVelocity then flyBodyVelocity:Destroy() flyBodyVelocity = nil end
+	if flyBodyGyro then flyBodyGyro:Destroy() flyBodyGyro = nil end
+
+	local hum = getHumanoid()
+	if hum then
+		hum.PlatformStand = false  -- включаем гравитацию обратно
+	end
+	flying = false
+	flyButton.Text = "Fly: OFF"
+	flyButton.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
+end
+
+-- Переключение по кнопке
+flyButton.Activated:Connect(function()
+	if flying then
+		stopFly()
+	else
+		startFly()
+	end
+end)
+
+-- Если персонаж умирает, выключаем полёт (чтобы не было ошибок)
+player.CharacterAdded:Connect(function()
+	if flying then
+		stopFly()
+	end
+end)
+
+-- (опционально) можно повесить на F9 скрытие GUI как раньше
