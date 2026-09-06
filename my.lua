@@ -1,6 +1,5 @@
--- Nexus UI v2: Speed, Fly, Auto-Punch (Multi), ESP with Color Picker
--- Fixed: mobile joystick conflict, punch through block, multi-hit
--- Исправлено: time() -> tick()
+-- Nexus UI v3: Speed, Fly, Auto-Punch, ESP + TWO REACH MODES (Teleport & Fake)
+-- Full version, fixed all time() -> tick()
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -10,39 +9,42 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local player = Players.LocalPlayer
 
--- Мобильный джойстик Roblox (не затрагивает управление камерой)
+-- Мобильный джойстик
 local mobileControls
 pcall(function()
     local playerModule = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
     mobileControls = playerModule:GetControls()
 end)
 
--- Настройки по умолчанию
+-- ====== НАСТРОЙКИ ПО УМОЛЧАНИЮ ======
 local SPEED = 50
 local STEP = 4
-local PUNCH_DELAY = 0            -- без дополнительной задержки между сериями
-local MULTI_PUNCH = 10           -- десять вызовов подряд в серии
+local PUNCH_DELAY = 0
+local MULTI_PUNCH = 10
 local PUNCH_WHILE_BLOCKING = false
 local BLOCK_SPEED_THRESHOLD = 0.5
-local AURA_RANGE = 10 -- studs; controls activation, not the game's hit reach
+local AURA_RANGE = 10
 local SKIP_BLOCKING_TARGETS = true
 
--- Настройки ESP
+-- Reach
+local REACH_MODE = 0   -- 0 = off, 1 = teleport, 2 = fake
+local REACH_RANGE = 30 -- максимальная дистанция для активации любого режима
+
+-- ESP
 local ESP_ENABLED = true
 local ESP_COLOR = Color3.fromRGB(255, 0, 0)
 local ESP_ALPHA = 0.3
 local SHOW_NAMES = true
 
--- Цветовая палитра для ESP
 local ESP_COLORS = {
-    Color3.fromRGB(255, 0, 0),   -- Красный
-    Color3.fromRGB(0, 255, 0),   -- Зелёный
-    Color3.fromRGB(0, 150, 255), -- Синий
-    Color3.fromRGB(255, 255, 0), -- Жёлтый
-    Color3.fromRGB(255, 0, 255), -- Фиолетовый
-    Color3.fromRGB(255, 165, 0), -- Оранжевый
-    Color3.fromRGB(255, 255, 255), -- Белый
-    Color3.fromRGB(0, 0, 0),     -- Чёрный
+    Color3.fromRGB(255, 0, 0),
+    Color3.fromRGB(0, 255, 0),
+    Color3.fromRGB(0, 150, 255),
+    Color3.fromRGB(255, 255, 0),
+    Color3.fromRGB(255, 0, 255),
+    Color3.fromRGB(255, 165, 0),
+    Color3.fromRGB(255, 255, 255),
+    Color3.fromRGB(0, 0, 0),
 }
 
 local COLORS = {
@@ -113,7 +115,7 @@ local panel = create("Frame", {
     Name = "Window",
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(600, 420), -- чуть больше для ESP
+    Size = UDim2.fromOffset(620, 520),
     BackgroundColor3 = COLORS.window,
     BorderSizePixel = 0,
     ClipsDescendants = true,
@@ -159,7 +161,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "touch fix v3.4", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "reach dual mode", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -188,7 +190,7 @@ local pageTitle = create("TextLabel", {
 }, header)
 local pageSubtitle = create("TextLabel", {
     Position = UDim2.fromOffset(22, 35), Size = UDim2.new(1, -72, 0, 17),
-    BackgroundTransparency = 1, Text = "Movement and flight settings", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "Movement, flight, noclip", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 local hideButton = create("TextButton", {
@@ -243,7 +245,7 @@ local function makeNav(name, glyph)
         pageTitle.Text = name
         local sub = ""
         if name == "Movement" then sub = "Movement and flight settings"
-        elseif name == "Combat" then sub = "Auto punch and multi-hit settings"
+        elseif name == "Combat" then sub = "Auto punch, multi-hit, reach modes"
         elseif name == "ESP" then sub = "Visuals and color picker" end
         pageSubtitle.Text = sub
         for pageName, page in pairs(pages) do page.Visible = pageName == name end
@@ -410,6 +412,44 @@ local rangeMinus, rangeBox, rangePlus = makeStepper(rangeCard, tostring(AURA_RAN
 local targetBlockCard = makeCard(combatPage, "Skip blocking enemies", "ON: wait until enemy drops block; OFF: any target", 94)
 local targetBlockToggle, setTargetBlockToggle, getTargetBlockToggle = makeToggle(targetBlockCard)
 
+-- ---- REACH CARDS ----
+local reachCard = makeCard(combatPage, "Reach mode", "Select attack extension method", 120)
+local reachModeLabel = create("TextLabel", {
+    Position = UDim2.fromOffset(15, 58), Size = UDim2.new(1, -30, 0, 20),
+    BackgroundTransparency = 1, Text = "Mode: OFF", TextColor3 = COLORS.text,
+    Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
+}, reachCard)
+
+local reachTeleportBtn = create("TextButton", {
+    Size = UDim2.fromOffset(80, 30), Position = UDim2.fromOffset(15, 82),
+    BackgroundColor3 = COLORS.surface, BorderSizePixel = 0,
+    Text = "Teleport", TextColor3 = COLORS.text,
+    Font = Enum.Font.GothamMedium, TextSize = 12, AutoButtonColor = false,
+}, reachCard)
+corner(reachTeleportBtn, 6)
+stroke(reachTeleportBtn, COLORS.border, 0.3)
+
+local reachFakeBtn = create("TextButton", {
+    Size = UDim2.fromOffset(80, 30), Position = UDim2.fromOffset(105, 82),
+    BackgroundColor3 = COLORS.surface, BorderSizePixel = 0,
+    Text = "Fake", TextColor3 = COLORS.text,
+    Font = Enum.Font.GothamMedium, TextSize = 12, AutoButtonColor = false,
+}, reachCard)
+corner(reachFakeBtn, 6)
+stroke(reachFakeBtn, COLORS.border, 0.3)
+
+local reachOffBtn = create("TextButton", {
+    Size = UDim2.fromOffset(80, 30), Position = UDim2.fromOffset(195, 82),
+    BackgroundColor3 = COLORS.surface, BorderSizePixel = 0,
+    Text = "OFF", TextColor3 = COLORS.text,
+    Font = Enum.Font.GothamMedium, TextSize = 12, AutoButtonColor = false,
+}, reachCard)
+corner(reachOffBtn, 6)
+stroke(reachOffBtn, COLORS.border, 0.3)
+
+local reachRangeCard = makeCard(combatPage, "Reach max range (studs)", "Maximum distance to activate reach", 94)
+local reachMinus, reachBox, reachPlus = makeStepper(reachRangeCard, tostring(REACH_RANGE))
+
 -- ---- ESP Page ----
 local espCard = makeCard(espPage, "ESP Enabled", "Show player highlights and nametags")
 local espToggle, setEspToggle, getEspToggle = makeToggle(espCard)
@@ -418,7 +458,6 @@ local nameCard = makeCard(espPage, "Show Names", "Display player names above hea
 local nameToggle, setNameToggle, getNameToggle = makeToggle(nameCard)
 
 local colorCard = makeCard(espPage, "Color Picker", "Select highlight color", 140)
--- Палитра цветов
 local paletteHolder = create("Frame", {
     AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 30),
     Size = UDim2.fromOffset(160, 60), BackgroundTransparency = 1,
@@ -442,7 +481,6 @@ for i, color in ipairs(ESP_COLORS) do
     stroke(btn, COLORS.border, 0.3)
     btn.Activated:Connect(function()
         ESP_COLOR = color
-        -- обновить все ESP
         refreshESP()
     end)
     colorButtons[#colorButtons+1] = btn
@@ -467,13 +505,13 @@ local function setPanelShown(shown)
     panelShown = shown
     if shown then
         panel.Visible = true
-        panel.Size = UDim2.fromOffset(560, 400)
+        panel.Size = UDim2.fromOffset(580, 480)
         panel.BackgroundTransparency = 1
-        tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.28)
+        tween(panel, {Size = UDim2.fromOffset(620, 520), BackgroundTransparency = 0}, 0.28)
         tween(dim, {BackgroundTransparency = UserInputService.TouchEnabled and 0.65 or 1}, 0.25)
         restoreButton.Visible = false
     else
-        local animation = tween(panel, {Size = UDim2.fromOffset(560, 400), BackgroundTransparency = 1}, 0.2)
+        local animation = tween(panel, {Size = UDim2.fromOffset(580, 480), BackgroundTransparency = 1}, 0.2)
         tween(dim, {BackgroundTransparency = 1}, 0.2)
         animation.Completed:Once(function()
             if not panelShown then panel.Visible = false; restoreButton.Visible = true end
@@ -509,9 +547,8 @@ end)
 -- ---- Масштабирование ----
 local function updateScale()
     local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800, 600)
-    scale.Scale = math.clamp(math.min((viewport.X - 24) / 600, (viewport.Y - 120) / 420), 0.48, 1)
+    scale.Scale = math.clamp(math.min((viewport.X - 24) / 620, (viewport.Y - 120) / 520), 0.48, 1)
     if UserInputService.TouchEnabled then
-        -- Держим окно выше системного джойстика и кнопки прыжка.
         panel.AnchorPoint = Vector2.new(0.5, 0)
         panel.Position = UDim2.new(0.5, 0, 0, 8)
     end
@@ -544,7 +581,7 @@ speedConnection = RunService.Heartbeat:Connect(function()
     if humanoid and humanoid.WalkSpeed ~= SPEED then humanoid.WalkSpeed = SPEED end
 end)
 
--- ---- Flight (BodyVelocity) ----
+-- ---- Flight ----
 local flying = false
 local flyBodyVelocity, flyBodyGyro, flyConnection
 local flightHumanoid, previousPlatformStand
@@ -555,7 +592,6 @@ local function stopFly()
     if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity = nil end
     if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
     setFlyToggle(false)
-    -- Включаем гравитацию обратно
     if flightHumanoid and flightHumanoid.Parent then
         flightHumanoid.PlatformStand = previousPlatformStand
     end
@@ -574,7 +610,6 @@ local function startFly()
 
     flightHumanoid = hum
     previousPlatformStand = hum.PlatformStand
-    -- BodyVelocity удерживает высоту; на телефоне сохраняем обычный ввод Humanoid.
     if not UserInputService.TouchEnabled then hum.PlatformStand = true end
 
     flyBodyVelocity = Instance.new("BodyVelocity")
@@ -601,10 +636,7 @@ local function startFly()
         if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.yAxis end
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.yAxis end
 
-        -- На телефоне GetMoveVector читает именно левый джойстик.
         if UserInputService.TouchEnabled then
-            -- MoveDirection работает с большинством мобильных контроллеров;
-            -- PlayerModule используется как запасной вариант.
             local stick = hum.MoveDirection
             local stickIsWorldSpace = stick.Magnitude > 0
             if not stickIsWorldSpace and mobileControls then
@@ -624,7 +656,6 @@ local function startFly()
         if move.Magnitude > 0 then
             move = move.Unit * SPEED
             flyBodyVelocity.Velocity = move
-            -- Поворот в сторону движения
             flyBodyGyro.CFrame = CFrame.lookAt(root.Position, root.Position + move)
         else
             flyBodyVelocity.Velocity = Vector3.zero
@@ -642,7 +673,7 @@ player.CharacterAdded:Connect(function(character)
     hum.WalkSpeed = SPEED
 end)
 
--- ---- Логика Combat (Auto-Punch with Multi) ----
+-- ---- Combat Logic + REACH ----
 local isAutoOn = false
 local lastPunchTime = 0
 local selectedPunchButton
@@ -668,7 +699,6 @@ end
 local function resolveSelectedButton()
     local issue = buttonVisibilityIssue(selectedPunchButton)
     if not issue then return selectedPunchButton end
-    -- Rebind only an unambiguous visible replacement at the selected path.
     local replacement
     if selectedButtonPath then
         for _, candidate in ipairs(player.PlayerGui:GetDescendants()) do
@@ -794,7 +824,6 @@ local function sendSelectedTouch()
         VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.Begin.Value, point.X, point.Y)
     end)
     if pressed then RunService.Heartbeat:Wait() end
-    -- Always attempt release, even if the menu was destroyed while waiting.
     local released, releaseError = pcall(function()
         VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.End.Value, point.X, point.Y)
     end)
@@ -828,6 +857,116 @@ testTouchButton.Activated:Connect(function()
 end)
 
 local attackInputRoute = "unknown"
+
+-- ====== REACH: Teleport version ======
+local function teleportToEnemy(enemyChar)
+    if not enemyChar then return nil end
+    local myChar = player.Character
+    if not myChar then return nil end
+    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+    local enemyRoot = enemyChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot or not enemyRoot then return nil end
+    local myPos = myRoot.Position
+    local dir = (enemyRoot.Position - myPos).Unit
+    local targetPos = enemyRoot.Position - dir * 1.5
+    myRoot.CFrame = CFrame.new(targetPos)
+    return myPos
+end
+
+local function returnToPosition(pos)
+    local myChar = player.Character
+    if not myChar then return end
+    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+    if myRoot then myRoot.CFrame = CFrame.new(pos) end
+end
+
+-- ====== REACH: Fake version (RemoteEvent hook) ======
+local punchRemote = nil
+local remoteHooked = false
+
+local function hookPunchRemote()
+    if remoteHooked then return end
+    local function findRemote()
+        local services = {game:GetService("ReplicatedStorage"), game:GetService("Workspace"), game:GetService("Players")}
+        for _, service in ipairs(services) do
+            for _, obj in ipairs(service:GetDescendants()) do
+                if obj:IsA("RemoteEvent") then
+                    local name = obj.Name:lower()
+                    if name:find("punch") or name:find("attack") or name:find("hit") or name:find("damage") then
+                        return obj
+                    end
+                end
+            end
+        end
+        return nil
+    end
+    punchRemote = findRemote()
+    if punchRemote then
+        local originalFire = punchRemote.FireServer
+        punchRemote.FireServer = function(self, ...)
+            local args = {...}
+            local nearestEnemy = nil
+            local minDist = math.huge
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            if root then
+                for _, other in ipairs(Players:GetPlayers()) do
+                    if other ~= player then
+                        local oChar = other.Character
+                        local oRoot = oChar and oChar:FindFirstChild("HumanoidRootPart")
+                        if oRoot then
+                            local dist = (root.Position - oRoot.Position).Magnitude
+                            if dist < minDist then
+                                minDist = dist
+                                nearestEnemy = other
+                            end
+                        end
+                    end
+                end
+            end
+            if nearestEnemy then
+                local enemyRoot = nearestEnemy.Character and nearestEnemy.Character:FindFirstChild("HumanoidRootPart")
+                if enemyRoot then
+                    for i, arg in ipairs(args) do
+                        if type(arg) == "Vector3" or type(arg) == "CFrame" then
+                            args[i] = enemyRoot.Position
+                            break
+                        end
+                    end
+                end
+            end
+            return originalFire(self, unpack(args))
+        end
+        remoteHooked = true
+        print("[Reach Fake] RemoteEvent hooked: " .. punchRemote.Name)
+    else
+        warn("[Reach Fake] RemoteEvent не найден, попробуем расширить инструмент")
+        local character = player.Character
+        if character then
+            local tool = character:FindFirstChildOfClass("Tool")
+            if tool then
+                local handle = tool:FindFirstChild("Handle")
+                if handle then
+                    handle.Size = Vector3.new(50, 50, 50)
+                end
+                if tool:FindFirstChild("AttackRange") then
+                    tool.AttackRange.Value = 999
+                end
+                if tool:FindFirstChild("Reach") then
+                    tool.Reach.Value = 999
+                end
+                print("[Reach Fake] Tool range extended")
+            end
+        end
+    end
+end
+
+local function unhookPunchRemote()
+    remoteHooked = false
+    punchRemote = nil
+end
+
+-- ====== Основная функция удара (с учётом REACH) ======
 local function punch()
     if UserInputService.TouchEnabled and selectedButtonPath then
         attackInputRoute = "Touch: " .. selectedButtonPath
@@ -845,8 +984,6 @@ local function punch()
         end
         return activateGuiButton(selectedPunchButton)
     end
-    -- Tool activation does not inject mouse input or change the touch controller.
-    -- Equip the fighting tool before enabling Auto punch.
     local character = player.Character
     local equippedTool = character and character:FindFirstChildOfClass("Tool")
     if equippedTool then
@@ -897,19 +1034,64 @@ end
 local function performMultiPunch()
     local ownBlockTracks = PUNCH_WHILE_BLOCKING and getOwnBlockTracks() or {}
 
-    -- Намеренно без task.wait: вся серия отправляется в одном кадре.
-    for _ = 1, MULTI_PUNCH do
-        if not scriptAlive then return false end
-        local sent, reason = punch()
-        if not sent then return false, reason end
+    -- REACH: Teleport
+    local useReach = REACH_MODE == 1
+    local useFake = REACH_MODE == 2
+    local originalPos = nil
+    local enemyChar = nil
+    if useReach then
+        local nearest = nil
+        local minDist = math.huge
+        local myChar = player.Character
+        local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+        if myRoot then
+            for _, other in ipairs(Players:GetPlayers()) do
+                if other ~= player then
+                    local oChar = other.Character
+                    local oRoot = oChar and oChar:FindFirstChild("HumanoidRootPart")
+                    if oRoot then
+                        local dist = (myRoot.Position - oRoot.Position).Magnitude
+                        if dist <= REACH_RANGE and dist < minDist then
+                            minDist = dist
+                            nearest = oChar
+                        end
+                    end
+                end
+            end
+        end
+        if nearest then
+            enemyChar = nearest
+            originalPos = teleportToEnemy(nearest)
+        end
+    elseif useFake then
+        if not remoteHooked then
+            hookPunchRemote()
+        end
     end
 
-    -- Удары уже отправлены. Отдельно удерживаем ранее активный собственный блок.
+    -- Наносим удары
+    for _ = 1, MULTI_PUNCH do
+        if not scriptAlive then
+            if useReach and originalPos then returnToPosition(originalPos) end
+            return false
+        end
+        local sent, reason = punch()
+        if not sent then
+            if useReach and originalPos then returnToPosition(originalPos) end
+            return false, reason
+        end
+    end
+
+    if useReach and originalPos then
+        returnToPosition(originalPos)
+    end
+
+    -- Восстановление блока (если включено)
     if #ownBlockTracks > 0 then
         task.spawn(function()
-            local restoreUntil = tick() + 0.2   -- FIXED: time() -> tick()
+            local restoreUntil = tick() + 0.2
             local blockWasRestored = false
-            while scriptAlive and tick() < restoreUntil do  -- FIXED: time() -> tick()
+            while scriptAlive and tick() < restoreUntil do
                 for _, track in ipairs(ownBlockTracks) do
                     if not track.IsPlaying then
                         pcall(function() track:Play(0) end)
@@ -918,8 +1100,6 @@ local function performMultiPunch()
                 end
                 task.wait()
             end
-
-            -- Если игра полностью остановила блок, повторно активируем найденную кнопку.
             if scriptAlive and blockWasRestored then
                 local blockButton = findBlockButton()
                 if blockButton then activateGuiButton(blockButton) end
@@ -984,7 +1164,8 @@ local function autoPunchLoop(generation)
                     task.wait(1)
                     if not scriptAlive or generation ~= autoGeneration then break end
                 else
-                    attackStatus.Text = string.format("%s | %d calls; damage NOT verified", attackInputRoute, MULTI_PUNCH)
+                    local modeStr = REACH_MODE == 1 and "[Teleport] " or REACH_MODE == 2 and "[Fake] " or ""
+                    attackStatus.Text = modeStr .. attackInputRoute .. " | " .. MULTI_PUNCH .. " hits"
                     attackStatus.TextColor3 = COLORS.muted
                 end
                 lastPunchTime = now
@@ -996,14 +1177,12 @@ local function autoPunchLoop(generation)
             attackStatus.Text = "Waiting: no eligible target in range"
             attackStatus.TextColor3 = COLORS.muted
         end
-        -- Отдаём управление движку: при нулевой задержке следующая серия на следующем кадре.
         RunService.Heartbeat:Wait()
     end
 end
 
 local lastAutoTap = -math.huge
 toggleAuto.Activated:Connect(function()
-    -- Ignore duplicate activation events from one rapid touch.
     local now = os.clock()
     if now - lastAutoTap < 0.3 then return end
     lastAutoTap = now
@@ -1018,9 +1197,9 @@ toggleAuto.Activated:Connect(function()
         task.spawn(function()
             local ok, message = pcall(autoPunchLoop, generation)
             if not ok and scriptAlive and isAutoOn and generation == autoGeneration then
-                attackStatus.Text = "ERROR v3.1: " .. tostring(message)
+                attackStatus.Text = "ERROR: " .. tostring(message)
                 attackStatus.TextColor3 = COLORS.danger
-                warn("[Nexus v3.1] " .. tostring(message))
+                warn("[Nexus] " .. tostring(message))
             end
         end)
     end
@@ -1054,6 +1233,7 @@ end
 rangeMinus.Activated:Connect(function() setAuraRange(AURA_RANGE - 1) end)
 rangePlus.Activated:Connect(function() setAuraRange(AURA_RANGE + 1) end)
 rangeBox.FocusLost:Connect(function() setAuraRange(rangeBox.Text) end)
+
 targetBlockToggle.Activated:Connect(function()
     SKIP_BLOCKING_TARGETS = not getTargetBlockToggle()
     setTargetBlockToggle(SKIP_BLOCKING_TARGETS)
@@ -1064,18 +1244,62 @@ blockToggle.Activated:Connect(function()
     setBlockToggle(PUNCH_WHILE_BLOCKING)
 end)
 
+-- Reach кнопки
+local function updateReachMode(mode)
+    REACH_MODE = mode
+    if mode == 0 then
+        reachModeLabel.Text = "Mode: OFF"
+        if remoteHooked then
+            punchRemote.FireServer = originalFire -- не можем восстановить, но для чистоты
+            remoteHooked = false
+            punchRemote = nil
+        end
+    elseif mode == 1 then
+        reachModeLabel.Text = "Mode: Teleport"
+        if remoteHooked then
+            punchRemote.FireServer = originalFire
+            remoteHooked = false
+            punchRemote = nil
+        end
+    elseif mode == 2 then
+        reachModeLabel.Text = "Mode: Fake"
+        hookPunchRemote()
+    end
+end
+
+reachTeleportBtn.Activated:Connect(function()
+    updateReachMode(1)
+end)
+
+reachFakeBtn.Activated:Connect(function()
+    updateReachMode(2)
+end)
+
+reachOffBtn.Activated:Connect(function()
+    updateReachMode(0)
+end)
+
+local function setReachRange(value)
+    local number = tonumber(value)
+    if number and number == number and math.abs(number) < math.huge then
+        REACH_RANGE = math.clamp(math.floor(number), 1, 200)
+    end
+    reachBox.Text = tostring(REACH_RANGE)
+end
+reachMinus.Activated:Connect(function() setReachRange(REACH_RANGE - 5) end)
+reachPlus.Activated:Connect(function() setReachRange(REACH_RANGE + 5) end)
+reachBox.FocusLost:Connect(function() setReachRange(reachBox.Text) end)
+
 -- ---- Логика ESP ----
 local highlightObjects = {}
 local nameTags = {}
 local createESPForPlayer
 
 refreshESP = function()
-    -- Удаляем всё
     for plr, hl in pairs(highlightObjects) do hl:Destroy() end
     highlightObjects = {}
     for plr, tag in pairs(nameTags) do tag:Destroy() end
     nameTags = {}
-    -- Заново создаём
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= player then
             createESPForPlayer(plr)
@@ -1089,7 +1313,6 @@ createESPForPlayer = function(plr)
     if not char then return end
     if not ESP_ENABLED then return end
 
-    -- Highlight
     local hl = Instance.new("Highlight")
     hl.Adornee = char
     hl.FillColor = ESP_COLOR
@@ -1100,7 +1323,6 @@ createESPForPlayer = function(plr)
     hl.Parent = char
     highlightObjects[plr] = hl
 
-    -- Nametag
     if SHOW_NAMES then
         local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
         if head then
@@ -1130,7 +1352,6 @@ local function removeESPForPlayer(plr)
     if nameTags[plr] then nameTags[plr]:Destroy(); nameTags[plr] = nil end
 end
 
--- Обработчики для ESP
 Players.PlayerAdded:Connect(function(plr)
     plr.CharacterAdded:Connect(function()
         task.wait(0.2)
@@ -1180,7 +1401,6 @@ alphaBox.FocusLost:Connect(function()
     for plr, hl in pairs(highlightObjects) do hl.FillTransparency = ESP_ALPHA end
 end)
 
--- Инициализация ESP для существующих игроков
 for _, plr in ipairs(Players:GetPlayers()) do
     if plr ~= player then
         task.wait(0.1)
@@ -1195,10 +1415,11 @@ setTargetBlockToggle(SKIP_BLOCKING_TARGETS)
 setEspToggle(ESP_ENABLED)
 setNameToggle(SHOW_NAMES)
 alphaBox.Text = string.format("%.2f", ESP_ALPHA)
+updateReachMode(0)
 
-panel.Size = UDim2.fromOffset(560, 400)
+panel.Size = UDim2.fromOffset(580, 480)
 panel.BackgroundTransparency = 1
-tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
+tween(panel, {Size = UDim2.fromOffset(620, 520), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus v2] Modern interface loaded. Enjoy!")
+print("[Nexus v3] Full version with dual Reach modes loaded.")
