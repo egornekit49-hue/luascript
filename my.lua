@@ -6,7 +6,7 @@ local player = Players.LocalPlayer
 
 -- ====== НАСТРОЙКИ ======
 local SPEED = 50          -- скорость бега
-local FLY_SPEED = 50      -- скорость полёта (можно менять)
+local FLY_SPEED = 50      -- скорость полёта
 local MIN_SPEED = 4
 local MAX_SPEED = 100
 local STEP = 4
@@ -17,7 +17,7 @@ gui.Name = "SpeedControlGui"
 gui.Parent = game:GetService("CoreGui")
 
 local panel = Instance.new("Frame")
-panel.Size = UDim2.fromOffset(280, 200)  -- увеличил высоту
+panel.Size = UDim2.fromOffset(280, 200)
 panel.Position = UDim2.new(0, 20, 1, -220)
 panel.BackgroundColor3 = Color3.fromRGB(25, 28, 36)
 panel.BorderSizePixel = 0
@@ -35,7 +35,6 @@ title.TextSize = 19
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = panel
 
--- Кнопки скорости
 local function createButton(name, text, x, y)
 	local button = Instance.new("TextButton")
 	button.Name = name
@@ -142,31 +141,25 @@ local function startFly()
 	local hum = character:FindFirstChild("Humanoid")
 	if not root or not hum then return end
 
-	-- Отключаем гравитацию (чтобы не падать)
-	hum.PlatformStand = true  -- часто работает как "отключить гравитацию"
+	hum.PlatformStand = true
 
-	-- BodyVelocity для движения
 	flyBodyVelocity = Instance.new("BodyVelocity")
 	flyBodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
 	flyBodyVelocity.Parent = root
 
-	-- BodyGyro для управления поворотом (сохраняет ориентацию по камере)
 	flyBodyGyro = Instance.new("BodyGyro")
 	flyBodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
 	flyBodyGyro.Parent = root
 
-	-- Обновление направления полёта
 	local function updateFly()
 		if not root or not flyBodyVelocity then return end
 		local camera = workspace.CurrentCamera
 		if not camera then return end
 
-		-- Получаем направления от камеры
 		local forward = camera.CFrame.LookVector
 		local right = camera.CFrame.RightVector
 		local up = camera.CFrame.UpVector
 
-		-- Обрабатываем нажатые клавиши
 		local moveDirection = Vector3.new(0, 0, 0)
 		if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDirection = moveDirection + forward end
 		if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDirection = moveDirection - forward end
@@ -175,24 +168,20 @@ local function startFly()
 		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDirection = moveDirection + up end
 		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDirection = moveDirection - up end
 
-		-- Если нет движения – останавливаемся
 		if moveDirection.Magnitude > 0 then
 			moveDirection = moveDirection.Unit * FLY_SPEED
 		else
 			moveDirection = Vector3.new(0, 0, 0)
 		end
 
-		-- Применяем скорость
 		flyBodyVelocity.Velocity = moveDirection
 
-		-- Поворачиваем тело в сторону движения (если есть движение)
 		if moveDirection.Magnitude > 0.1 then
 			local targetCFrame = CFrame.lookAt(root.Position, root.Position + moveDirection)
 			flyBodyGyro.CFrame = targetCFrame
 		end
 	end
 
-	-- Запускаем обновление в каждом кадре
 	flyConnection = RunService.Heartbeat:Connect(updateFly)
 	flying = true
 	flyButton.Text = "Fly: ON"
@@ -206,14 +195,13 @@ local function stopFly()
 
 	local hum = getHumanoid()
 	if hum then
-		hum.PlatformStand = false  -- включаем гравитацию обратно
+		hum.PlatformStand = false
 	end
 	flying = false
 	flyButton.Text = "Fly: OFF"
 	flyButton.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
 end
 
--- Переключение по кнопке
 flyButton.Activated:Connect(function()
 	if flying then
 		stopFly()
@@ -222,11 +210,8 @@ flyButton.Activated:Connect(function()
 	end
 end)
 
--- Если персонаж умирает, выключаем полёт (чтобы не было ошибок)
 player.CharacterAdded:Connect(function()
 	if flying then
 		stopFly()
 	end
 end)
-
--- (опционально) можно повесить на F9 скрытие GUI как раньше
