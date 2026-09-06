@@ -24,10 +24,11 @@ local Settings = {
     step = 4,
     autoPunch = false,
     punchDelay = 0,        -- мс
-    multiPunch = 8,
+    multiPunch = 10,
     auraRange = 12,
     punchX = 0.86,
-    punchY = 0.74,
+    punchY = 0.80,
+    skipBlockingTargets = true,
     esp = true,
     espAlpha = 0.30,
     espColor = Color3.fromRGB(255,0,0),
@@ -81,6 +82,47 @@ local window = new("Frame", {
     BorderSizePixel = 0
 }, gui)
 round(window, 16); stroke(window)
+
+-- Отдельные кнопки скрытия не перехватывают касания игрового джойстика.
+local reopenButton = new("TextButton", {
+    Position = UDim2.fromOffset(12, 92),
+    Size = UDim2.fromOffset(48, 48),
+    Text = "N",
+    Font = Enum.Font.GothamBold,
+    TextSize = 18,
+    TextColor3 = COLORS.text,
+    BackgroundColor3 = COLORS.side,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Visible = false,
+    ZIndex = 50,
+}, gui)
+round(reopenButton, 14); stroke(reopenButton)
+
+local closeButton = new("TextButton", {
+    AnchorPoint = Vector2.new(1, 0),
+    Position = UDim2.new(1, -12, 0, 12),
+    Size = UDim2.fromOffset(34, 34),
+    Text = "×",
+    Font = Enum.Font.GothamBold,
+    TextSize = 18,
+    TextColor3 = COLORS.muted,
+    BackgroundColor3 = COLORS.card,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 20,
+}, window)
+round(closeButton, 10)
+
+closeButton.Activated:Connect(function()
+    window.Visible = false
+    reopenButton.Visible = true
+end)
+
+reopenButton.Activated:Connect(function()
+    window.Visible = true
+    reopenButton.Visible = false
+end)
 
 -- Боковая панель
 local side = new("Frame", {
@@ -198,8 +240,7 @@ local function createToggle(parent, initial)
         }):Play()
     end
 
-    btn.Activated:Connect(function() set(not state) end)
-    return set, function() return state end
+    return set, function() return state end, btn
 end
 
 -- Степпер (+/-)
@@ -329,7 +370,7 @@ end)
 -- Fly
 local flyCard, _ = makeCard("Fly", "Camera movement", 78)
 flyCard = addCardToPage(pageMov, flyCard)
-local flySet, flyState = createToggle(flyCard, false)
+local flySet, flyState, flyToggle = createToggle(flyCard, false)
 local flying = false
 local bv, bg
 
@@ -365,7 +406,7 @@ local function startFly()
                 if UIS:IsKeyDown(Enum.KeyCode.A) then move = move - camera.CFrame.RightVector end
                 if UIS:IsKeyDown(Enum.KeyCode.D) then move = move + camera.CFrame.RightVector end
             end
-            bv.Velocity = move.Unit * getSpeed()
+            bv.Velocity = move.Magnitude > 0.001 and move.Unit * getSpeed() or Vector3.zero
             bg.CFrame = camera.CFrame
             task.wait()
         end
@@ -374,9 +415,11 @@ end
 
 -- Кнопка для Fly внутри карточки
 local flyBtn = createButton(flyCard, "TOGGLE FLY", 48, COLORS.border)
-flyBtn.Activated:Connect(function()
+local function toggleFly()
     if flyState() then stopFly() else startFly() end
-end)
+end
+flyBtn.Activated:Connect(toggleFly)
+flyToggle.Activated:Connect(toggleFly)
 
 -- 2. Страница Combat
 local pageCom = "Combat"
@@ -387,7 +430,7 @@ statusCard = addCardToPage(pageCom, statusCard)
 -- Auto Punch
 local autoCard, _ = makeCard("Auto Punch", "Automatic attack of nearest enemy", 78)
 autoCard = addCardToPage(pageCom, autoCard)
-local autoSet, autoState = createToggle(autoCard, false)
+local autoSet, autoState, autoToggle = createToggle(autoCard, false)
 
 -- Настройки
 local delayCard, _ = makeCard("Punch Delay", "Milliseconds between attacks", 78)
@@ -402,50 +445,131 @@ local rangeCard, _ = makeCard("Aura Range", "Detection distance", 78)
 rangeCard = addCardToPage(pageCom, rangeCard)
 local _, _, _, setRange, getRange = createStepper(rangeCard, Settings.auraRange, 1, 30, 1)
 
+local blockCard, _ = makeCard("Skip Blocking", "Attack only after the enemy drops block", 78)
+blockCard = addCardToPage(pageCom, blockCard)
+local blockSet, blockState, blockToggle = createToggle(blockCard, Settings.skipBlockingTargets)
+
 -- Тестовая кнопка
 local testCard, _ = makeCard("Test Punch", "Tap to verify mobile attack", 78)
 testCard = addCardToPage(pageCom, testCard)
 local testBtn = createButton(testCard, "TEST", 18, COLORS.green)
-testBtn.Activated:Connect(function() punch() statusLabel.Text = "Punch sent" end)
 
 -- Логика автопанча
 local running = false
 local lastTime = 0
 local punchButton = nil
+local punch
+
+local function isVisible(guiObject)
+    local current = guiObject
+    while current and current:IsA("GuiObject") do
+        if not current.Visible then return false end
+        current = current.Parent
+    end
+    return guiObject.AbsoluteSize.X > 4 and guiObject.AbsoluteSize.Y > 4
+end
 
 local function cachePunchButton()
-    if punchButton and punchButton.Parent then return punchButton end
+    if punchButton and punchButton.Parent and isVisible(punchButton) then return punchButton end
+    punchButton = nil
     local pg = player:WaitForChild("PlayerGui")
+    local best, bestScore
     for _, v in ipairs(pg:GetDescendants()) do
-        if v:IsA("GuiButton") then
+        if v:IsA("GuiButton") and isVisible(v) and not v:IsDescendantOf(gui) then
             local n = v.Name:lower()
             if n:find("punch") or n:find("attack") or n:find("hit") or n:find("jab") then
                 punchButton = v
                 return v
             end
+            -- В Boxing Beta кнопка кулака иногда называется просто "button".
+            -- Выбираем наиболее нижнюю крупную кнопку справа, не трогая джойстик слева.
+            local center = v.AbsolutePosition + v.AbsoluteSize / 2
+            local vp = camera.ViewportSize
+            if center.X > vp.X * 0.68 and center.Y > vp.Y * 0.55 then
+                local score = center.Y / math.max(vp.Y, 1) + math.min(v.AbsoluteSize.X, v.AbsoluteSize.Y) / 300
+                if not bestScore or score > bestScore then
+                    best, bestScore = v, score
+                end
+            end
         end
     end
-    return nil
+    punchButton = best
+    return best
 end
 task.spawn(function() while task.wait(2) do cachePunchButton() end end)
 
+local touchSerial = 0
 local function touch(x, y)
-    VIM:SendTouchEvent(0, Enum.UserInputState.Begin.Value, x, y)
-    task.wait(0.015)
-    VIM:SendTouchEvent(0, Enum.UserInputState.End.Value, x, y)
+    -- Не используем ID 0: он может совпасть с пальцем на мобильном джойстике.
+    touchSerial = (touchSerial % 1000) + 1
+    local touchId = 900000 + touchSerial
+    VIM:SendTouchEvent(touchId, Enum.UserInputState.Begin.Value, x, y)
+    VIM:SendTouchEvent(touchId, Enum.UserInputState.End.Value, x, y)
 end
 
-function punch()
+local function getPunchPoint()
     local btn = cachePunchButton()
     if btn then
         local pos = btn.AbsolutePosition
         local size = btn.AbsoluteSize
-        touch(pos.X + size.X/2, pos.Y + size.Y/2)
-        return true
+        return pos.X + size.X/2, pos.Y + size.Y/2, btn.Name
     end
     local vp = camera.ViewportSize
-    touch(vp.X * Settings.punchX, vp.Y * Settings.punchY)
-    return true
+    return vp.X * Settings.punchX, vp.Y * Settings.punchY, "fallback"
+end
+
+punch = function(count)
+    local x, y, source = getPunchPoint()
+    local ok, err = pcall(function()
+        for _ = 1, math.clamp(count or 1, 1, 10) do
+            touch(x, y)
+        end
+    end)
+    return ok, ok and source or tostring(err)
+end
+
+testBtn.Activated:Connect(function()
+    local ok, source = punch(1)
+    statusLabel.Text = ok and ("Punch sent: " .. source) or ("Input error: " .. source)
+end)
+
+local function isBlocking(character)
+    for _, name in ipairs({"Blocking", "IsBlocking", "Block", "block"}) do
+        local attr = character:GetAttribute(name)
+        if attr == true then return true end
+        local value = character:FindFirstChild(name, true)
+        if value and value:IsA("BoolValue") and value.Value then return true end
+    end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+    if animator then
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            local animation = track.Animation
+            local label = ((track.Name or "") .. " " .. (animation and animation.Name or "")):lower()
+            if label:find("block") or label:find("guard") then return true end
+        end
+    end
+    return false
+end
+
+blockToggle.Activated:Connect(function()
+    Settings.skipBlockingTargets = not Settings.skipBlockingTargets
+    blockSet(Settings.skipBlockingTargets)
+end)
+
+local function canAttack(character)
+    return not blockState() or not isBlocking(character)
+end
+
+local function sendBurst()
+    local count = getMulti()
+    local ok, source = punch(count)
+    if ok then
+        statusLabel.Text = string.format("Sent %d touches: %s", count, source)
+    else
+        statusLabel.Text = "Input error: " .. source
+    end
+    return ok
 end
 
 local function nearestEnemy()
@@ -459,7 +583,7 @@ local function nearestEnemy()
         if plr ~= player and plr.Character then
             local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
             local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-            if hrp and hum and hum.Health > 0 then
+            if hrp and hum and hum.Health > 0 and canAttack(plr.Character) then
                 local d = (root.Position - hrp.Position).Magnitude
                 if d < dist then
                     dist = d
@@ -478,12 +602,8 @@ task.spawn(function()
             local enemy = nearestEnemy()
             if enemy then
                 if tick() - lastTime >= getDelay() / 1000 then
-                    for i = 1, getMulti() do
-                        punch()
-                        task.wait(0.01)
-                    end
+                    sendBurst()
                     lastTime = tick()
-                    statusLabel.Text = "Enemy detected ✓"
                 end
             else
                 statusLabel.Text = "Searching..."
@@ -493,7 +613,7 @@ task.spawn(function()
     end
 end)
 
-autoCard:FindFirstChildOfClass("TextButton").Activated:Connect(function()
+autoToggle.Activated:Connect(function()
     Settings.autoPunch = not Settings.autoPunch
     autoSet(Settings.autoPunch)
     statusLabel.Text = Settings.autoPunch and "Auto Punch ON" or "Auto Punch OFF"
@@ -503,11 +623,11 @@ end)
 local pageESP = "ESP"
 local espCard, _ = makeCard("ESP", "Show enemy highlights", 78)
 espCard = addCardToPage(pageESP, espCard)
-local espSet, espState = createToggle(espCard, Settings.esp)
+local espSet, espState, espToggle = createToggle(espCard, Settings.esp)
 
 local namesCard, _ = makeCard("Names", "Show player names", 78)
 namesCard = addCardToPage(pageESP, namesCard)
-local nameSet, nameState = createToggle(namesCard, true)
+local nameSet, nameState, nameToggle = createToggle(namesCard, true)
 
 local espObjects = {}
 
@@ -567,13 +687,13 @@ Players.PlayerAdded:Connect(function(plr)
 end)
 Players.PlayerRemoving:Connect(removeESP)
 
-espCard:FindFirstChildOfClass("TextButton").Activated:Connect(function()
+espToggle.Activated:Connect(function()
     Settings.esp = not Settings.esp
     espSet(Settings.esp)
     refreshESP()
 end)
 
-namesCard:FindFirstChildOfClass("TextButton").Activated:Connect(function()
+nameToggle.Activated:Connect(function()
     nameSet(not nameState())
     refreshESP()
 end)
@@ -616,10 +736,17 @@ end
 local pageMisc = "Misc"
 local noclipCard, _ = makeCard("Noclip", "Disable collisions", 78)
 noclipCard = addCardToPage(pageMisc, noclipCard)
-local noclipSet, noclipState = createToggle(noclipCard, false)
-noclipCard:FindFirstChildOfClass("TextButton").Activated:Connect(function()
+local noclipSet, noclipState, noclipToggle = createToggle(noclipCard, false)
+local originalCollision = setmetatable({}, {__mode = "k"})
+noclipToggle.Activated:Connect(function()
     Settings.noclip = not Settings.noclip
     noclipSet(Settings.noclip)
+    if not Settings.noclip then
+        for part, canCollide in pairs(originalCollision) do
+            if part.Parent then part.CanCollide = canCollide end
+        end
+        table.clear(originalCollision)
+    end
 end)
 
 RunService.Stepped:Connect(function()
@@ -628,6 +755,7 @@ RunService.Stepped:Connect(function()
     if char then
         for _, v in ipairs(char:GetDescendants()) do
             if v:IsA("BasePart") then
+                if originalCollision[v] == nil then originalCollision[v] = v.CanCollide end
                 v.CanCollide = false
             end
         end
