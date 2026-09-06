@@ -164,7 +164,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "mobile + pc v3.7", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "mobile + pc v3.8", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -1056,14 +1056,19 @@ toggleAuto.Activated:Connect(function()
     attackStatus.Text = isAutoOn and "Checking attack input..." or "Auto punch: OFF"
     attackStatus.TextColor3 = COLORS.muted
     if isAutoOn then
+        -- Закрываем тяжёлое окно только один раз до запуска боевого цикла.
+        -- После анимации panel.Visible станет false, и ввод не попадёт в Nexus.
+        setPanelShown(false)
         lastPunchTime = 0
         local generation = autoGeneration
         task.spawn(function()
+            task.wait(0.25)
+            if not scriptAlive or not isAutoOn or generation ~= autoGeneration then return end
             local ok, message = pcall(autoPunchLoop, generation)
             if not ok and scriptAlive and isAutoOn and generation == autoGeneration then
-                attackStatus.Text = "ERROR v3.7: " .. tostring(message)
+                attackStatus.Text = "ERROR v3.8: " .. tostring(message)
                 attackStatus.TextColor3 = COLORS.danger
-                warn("[Nexus v3.7] " .. tostring(message))
+                warn("[Nexus v3.8] " .. tostring(message))
             end
         end)
     end
@@ -1244,4 +1249,4 @@ panel.BackgroundTransparency = 1
 tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus v3.7] Mobile + PC interface loaded")
+print("[Nexus v3.8] Mobile + PC interface loaded")
