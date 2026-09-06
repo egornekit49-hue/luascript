@@ -23,6 +23,8 @@ local PUNCH_DELAY = 500          -- задержка между сериями �
 local MULTI_PUNCH = 4            -- количество ударов за раз
 local PUNCH_WHILE_BLOCKING = false
 local BLOCK_SPEED_THRESHOLD = 0.5
+local AURA_RANGE = 10 -- studs; controls activation, not the game's hit reach
+local SKIP_BLOCKING_TARGETS = true
 
 -- Настройки ESP
 local ESP_ENABLED = true
@@ -92,6 +94,9 @@ local gui = create("ScreenGui", {
     IgnoreGuiInset = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, game:GetService("CoreGui"))
+
+local scriptAlive = true
+gui.Destroying:Connect(function() scriptAlive = false end)
 
 local dim = create("Frame", {
     Name = "Dim",
@@ -335,6 +340,11 @@ local multiMinus, multiBox, multiPlus = makeStepper(multiCard, tostring(MULTI_PU
 local blockCard = makeCard(combatPage, "Punch while blocking", "Allow punching even when you are blocking")
 local blockToggle, setBlockToggle, getBlockToggle = makeToggle(blockCard)
 
+local rangeCard = makeCard(combatPage, "Aura range (studs)", "Auto punch activation distance", 94)
+local rangeMinus, rangeBox, rangePlus = makeStepper(rangeCard, tostring(AURA_RANGE))
+local targetBlockCard = makeCard(combatPage, "Skip blocking enemies", "ON: wait until enemy drops block; OFF: any target", 94)
+local targetBlockToggle, setTargetBlockToggle, getTargetBlockToggle = makeToggle(targetBlockCard)
+
 -- ---- ESP Page ----
 local espCard = makeCard(espPage, "ESP Enabled", "Show player highlights and nametags")
 local espToggle, setEspToggle, getEspToggle = makeToggle(espCard)
@@ -462,7 +472,9 @@ decrease.Activated:Connect(function() setSpeed(SPEED - STEP) end)
 increase.Activated:Connect(function() setSpeed(SPEED + STEP) end)
 valueBox.FocusLost:Connect(function() setSpeed(valueBox.Text) end)
 
-RunService.Heartbeat:Connect(function()
+local speedConnection
+speedConnection = RunService.Heartbeat:Connect(function()
+    if not scriptAlive then speedConnection:Disconnect(); return end
     local humanoid = getHumanoid()
     if humanoid and humanoid.WalkSpeed ~= SPEED then humanoid.WalkSpeed = SPEED end
 end)
@@ -470,6 +482,7 @@ end)
 -- ---- Flight (BodyVelocity) ----
 local flying = false
 local flyBodyVelocity, flyBodyGyro, flyConnection
+local flightHumanoid, previousPlatformStand
 
 local function stopFly()
     flying = false
@@ -478,9 +491,13 @@ local function stopFly()
     if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
     setFlyToggle(false)
     -- Включаем гравитацию обратно
-    local hum = getHumanoid()
-    if hum then hum.PlatformStand = false end
+    if flightHumanoid and flightHumanoid.Parent then
+        flightHumanoid.PlatformStand = previousPlatformStand
+    end
+    flightHumanoid = nil
 end
+
+gui.Destroying:Connect(stopFly)
 
 local function startFly()
     local character = player.Character
@@ -490,8 +507,10 @@ local function startFly()
     local hum = character:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    -- Отключаем гравитацию (PlatformStand)
-    hum.PlatformStand = true
+    flightHumanoid = hum
+    previousPlatformStand = hum.PlatformStand
+    -- BodyVelocity удерживает высоту; на телефоне сохраняем обычный ввод Humanoid.
+    if not UserInputService.TouchEnabled then hum.PlatformStand = true end
 
     flyBodyVelocity = Instance.new("BodyVelocity")
     flyBodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
@@ -593,7 +612,7 @@ local function activateGuiButton(button)
         local ok = pcall(function() firesignal(button.Activated) end)
         if ok then return true end
     end
-    if VirtualInputManager then
+    if VirtualInputManager and not UserInputService.TouchEnabled then
         local center = button.AbsolutePosition + button.AbsoluteSize / 2
         return pcall(function()
             VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
@@ -608,7 +627,7 @@ local function punch()
     if button and button:IsA("GuiButton") then
         return activateGuiButton(button)
     end
-    if VirtualInputManager then
+    if VirtualInputManager and not UserInputService.TouchEnabled then
         return pcall(function()
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
@@ -637,7 +656,8 @@ local function performMultiPunch()
 
     -- Намеренно без task.wait: вся серия отправляется в одном кадре.
     for _ = 1, MULTI_PUNCH do
-        punch()
+        if not scriptAlive then return false end
+        if not punch() then return false end
     end
 
     -- Удары уже отправлены. Отдельно удерживаем ранее активный собственный блок.
@@ -645,7 +665,7 @@ local function performMultiPunch()
         task.spawn(function()
             local restoreUntil = time() + 0.2
             local blockWasRestored = false
-            while time() < restoreUntil do
+            while scriptAlive and time() < restoreUntil do
                 for _, track in ipairs(ownBlockTracks) do
                     if not track.IsPlaying then
                         pcall(function() track:Play(0) end)
@@ -656,12 +676,13 @@ local function performMultiPunch()
             end
 
             -- Если игра полностью остановила блок, повторно активируем найденную кнопку.
-            if blockWasRestored then
+            if scriptAlive and blockWasRestored then
                 local blockButton = findBlockButton()
                 if blockButton then activateGuiButton(blockButton) end
             end
         end)
     end
+    return true
 end
 
 local function isBlocking(character)
@@ -687,9 +708,11 @@ local function getNearestEnemy()
         if other == player then continue end
         local otherCharacter = other.Character
         local otherRoot = otherCharacter and otherCharacter:FindFirstChild("HumanoidRootPart")
-        if otherRoot then
+        local otherHumanoid = otherCharacter and otherCharacter:FindFirstChildOfClass("Humanoid")
+        if otherRoot and otherHumanoid and otherHumanoid.Health > 0 then
             local currentDistance = (root.Position - otherRoot.Position).Magnitude
-            if currentDistance < distance then
+            if currentDistance <= AURA_RANGE and currentDistance < distance
+                and (not SKIP_BLOCKING_TARGETS or not isBlocking(otherCharacter)) then
                 nearest, distance = otherCharacter, currentDistance
             end
         end
@@ -697,22 +720,24 @@ local function getNearestEnemy()
     return nearest
 end
 
-local function autoPunchLoop()
-    while isAutoOn do
+local autoGeneration = 0
+local function autoPunchLoop(generation)
+    while scriptAlive and isAutoOn and generation == autoGeneration do
         local enemy = getNearestEnemy()
         local now = tick() * 1000
         if enemy then
             local enemyBlocking = isBlocking(enemy)
             local selfBlocking = isBlocking(player.Character)
-            local canPunch = false
-            if PUNCH_WHILE_BLOCKING then
-                -- Игнорируем только собственный блок; блок противника учитываем как раньше.
-                canPunch = not enemyBlocking
-            else
-                canPunch = (not enemyBlocking) and (not selfBlocking)
-            end
+            local canPunch = (PUNCH_WHILE_BLOCKING or not selfBlocking)
+                and (not SKIP_BLOCKING_TARGETS or not enemyBlocking)
             if canPunch and now - lastPunchTime >= PUNCH_DELAY then
-                performMultiPunch()
+                if not performMultiPunch() then
+                    isAutoOn = false
+                    setAutoToggle(false)
+                    pageSubtitle.Text = "Attack input unavailable — auto punch stopped"
+                    warn("[Nexus] Attack input failed; mouse emulation is disabled on touch devices.")
+                    break
+                end
                 lastPunchTime = now
             end
         end
@@ -721,11 +746,12 @@ local function autoPunchLoop()
 end
 
 toggleAuto.Activated:Connect(function()
+    autoGeneration = autoGeneration + 1
     isAutoOn = not getAutoToggle()
     setAutoToggle(isAutoOn)
     if isAutoOn then
         lastPunchTime = 0
-        task.spawn(autoPunchLoop)
+        task.spawn(autoPunchLoop, autoGeneration)
     end
 end)
 
@@ -746,6 +772,21 @@ end
 multiMinus.Activated:Connect(function() setMulti(MULTI_PUNCH - 1) end)
 multiPlus.Activated:Connect(function() setMulti(MULTI_PUNCH + 1) end)
 multiBox.FocusLost:Connect(function() setMulti(multiBox.Text) end)
+
+local function setAuraRange(value)
+    local number = tonumber(value)
+    if number and number == number and math.abs(number) < math.huge then
+        AURA_RANGE = math.clamp(math.floor(number), 1, 100)
+    end
+    rangeBox.Text = tostring(AURA_RANGE)
+end
+rangeMinus.Activated:Connect(function() setAuraRange(AURA_RANGE - 1) end)
+rangePlus.Activated:Connect(function() setAuraRange(AURA_RANGE + 1) end)
+rangeBox.FocusLost:Connect(function() setAuraRange(rangeBox.Text) end)
+targetBlockToggle.Activated:Connect(function()
+    SKIP_BLOCKING_TARGETS = not getTargetBlockToggle()
+    setTargetBlockToggle(SKIP_BLOCKING_TARGETS)
+end)
 
 blockToggle.Activated:Connect(function()
     PUNCH_WHILE_BLOCKING = not getBlockToggle()
@@ -879,6 +920,7 @@ end
 -- ---- Инициализация ----
 setSpeed(SPEED)
 setBlockToggle(PUNCH_WHILE_BLOCKING)
+setTargetBlockToggle(SKIP_BLOCKING_TARGETS)
 setEspToggle(ESP_ENABLED)
 setNameToggle(SHOW_NAMES)
 alphaBox.Text = string.format("%.2f", ESP_ALPHA)
