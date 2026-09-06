@@ -1,5 +1,5 @@
 -- Nexus UI v2: Speed, Fly, Auto-Punch (Multi), ESP with Color Picker
--- v3.8 – исправлено движение после перерождения и телепортации
+-- Fixed: mobile joystick conflict, punch through block, multi-hit
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -14,7 +14,7 @@ if desktopInput then
     pcall(function() virtualInput = UserInputService:CreateVirtualInput() end)
 end
 
--- Мобильный джойстик Roblox
+-- Мобильный джойстик Roblox (не затрагивает управление камерой)
 local mobileControls
 pcall(function()
     local playerModule = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
@@ -24,12 +24,12 @@ end)
 -- Настройки по умолчанию
 local SPEED = 50
 local STEP = 4
-local PUNCH_DELAY = 0
-local MULTI_PUNCH = 10
-local MIN_SERIES_INTERVAL = 500
+local PUNCH_DELAY = 0            -- без дополнительной задержки между сериями
+local MULTI_PUNCH = 10           -- десять вызовов подряд в серии
+local MIN_SERIES_INTERVAL = 500  -- максимум две серии в секунду при delay = 0
 local PUNCH_WHILE_BLOCKING = true
 local BLOCK_SPEED_THRESHOLD = 0.5
-local AURA_RANGE = 10
+local AURA_RANGE = 10 -- studs; controls activation, not the game's hit reach
 local SKIP_BLOCKING_TARGETS = true
 
 -- Настройки ESP
@@ -38,15 +38,16 @@ local ESP_COLOR = Color3.fromRGB(255, 0, 0)
 local ESP_ALPHA = 0.3
 local SHOW_NAMES = true
 
+-- Цветовая палитра для ESP
 local ESP_COLORS = {
-    Color3.fromRGB(255, 0, 0),
-    Color3.fromRGB(0, 255, 0),
-    Color3.fromRGB(0, 150, 255),
-    Color3.fromRGB(255, 255, 0),
-    Color3.fromRGB(255, 0, 255),
-    Color3.fromRGB(255, 165, 0),
-    Color3.fromRGB(255, 255, 255),
-    Color3.fromRGB(0, 0, 0),
+    Color3.fromRGB(255, 0, 0),   -- Красный
+    Color3.fromRGB(0, 255, 0),   -- Зелёный
+    Color3.fromRGB(0, 150, 255), -- Синий
+    Color3.fromRGB(255, 255, 0), -- Жёлтый
+    Color3.fromRGB(255, 0, 255), -- Фиолетовый
+    Color3.fromRGB(255, 165, 0), -- Оранжевый
+    Color3.fromRGB(255, 255, 255), -- Белый
+    Color3.fromRGB(0, 0, 0),     -- Чёрный
 }
 
 local COLORS = {
@@ -117,7 +118,7 @@ local panel = create("Frame", {
     Name = "Window",
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(600, 420),
+    Size = UDim2.fromOffset(600, 420), -- чуть больше для ESP
     BackgroundColor3 = COLORS.window,
     BorderSizePixel = 0,
     ClipsDescendants = true,
@@ -163,7 +164,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "mobile + pc v3.8", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "v3.7 movement + block test", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -406,8 +407,25 @@ local delayMinus, delayBox, delayPlus = makeStepper(delayCard, tostring(PUNCH_DE
 local multiCard = makeCard(combatPage, "Multi-punch count", "Number of punches per activation (1-10)", 94)
 local multiMinus, multiBox, multiPlus = makeStepper(multiCard, tostring(MULTI_PUNCH))
 
-local blockCard = makeCard(combatPage, "Punch while blocking", "Send attacks while blocking; server rules still apply")
+local blockCard = makeCard(combatPage, "Punch while blocking", "Allow punching even when you are blocking")
 local blockToggle, setBlockToggle, getBlockToggle = makeToggle(blockCard)
+local testBlockCard = makeCard(combatPage, "Space block test (PC)", "EXPERIMENT: release, hit, restore; protection briefly drops", 94)
+local testBlockButton, setTestBlock, getTestBlock = makeToggle(testBlockCard)
+local blockPauseCard = makeCard(combatPage, "Block test pause (ms)", "Pause before and after each single test hit", 94)
+local blockMinus, blockBox, blockPlus = makeStepper(blockPauseCard, "50")
+local blockPause = 50
+local function setBlockPause(value)
+    local n = tonumber(value)
+    if n and n == n and math.abs(n) < math.huge then blockPause = math.clamp(math.floor(n), 0, 500) end
+    blockBox.Text = tostring(blockPause)
+end
+blockMinus.Activated:Connect(function() setBlockPause(blockPause - 10) end)
+blockPlus.Activated:Connect(function() setBlockPause(blockPause + 10) end)
+blockBox.FocusLost:Connect(function() setBlockPause(blockBox.Text) end)
+testBlockButton.Activated:Connect(function()
+    setTestBlock(desktopInput and not getTestBlock())
+    if getTestBlock() then PUNCH_WHILE_BLOCKING = true; setBlockToggle(true) end
+end)
 
 local rangeCard = makeCard(combatPage, "Aura range (studs)", "Auto punch activation distance", 94)
 local rangeMinus, rangeBox, rangePlus = makeStepper(rangeCard, tostring(AURA_RANGE))
@@ -422,6 +440,7 @@ local nameCard = makeCard(espPage, "Show Names", "Display player names above hea
 local nameToggle, setNameToggle, getNameToggle = makeToggle(nameCard)
 
 local colorCard = makeCard(espPage, "Color Picker", "Select highlight color", 140)
+-- Палитра цветов
 local paletteHolder = create("Frame", {
     AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 30),
     Size = UDim2.fromOffset(160, 60), BackgroundTransparency = 1,
@@ -445,6 +464,7 @@ for i, color in ipairs(ESP_COLORS) do
     stroke(btn, COLORS.border, 0.3)
     btn.Activated:Connect(function()
         ESP_COLOR = color
+        -- обновить все ESP
         refreshESP()
     end)
     colorButtons[#colorButtons+1] = btn
@@ -520,6 +540,7 @@ local function updateScale()
     local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800, 600)
     scale.Scale = math.clamp(math.min((viewport.X - 24) / 600, (viewport.Y - 120) / 420), 0.48, 1)
     if UserInputService.TouchEnabled then
+        -- Держим окно выше системного джойстика и кнопки прыжка.
         panel.AnchorPoint = Vector2.new(0.5, 0)
         panel.Position = UDim2.new(0.5, 0, 0, 8)
     end
@@ -546,16 +567,39 @@ increase.Activated:Connect(function() setSpeed(SPEED + STEP) end)
 valueBox.FocusLost:Connect(function() setSpeed(valueBox.Text) end)
 
 local speedConnection
+local movementStatusCard = makeCard(movementPage, "Movement state", "Read-only diagnostics after respawn / ring entry", 94)
+local movementStatus = create("TextLabel", {
+    Position = UDim2.fromOffset(15, 56), Size = UDim2.new(1, -30, 0, 28),
+    BackgroundTransparency = 1, Text = "", TextColor3 = COLORS.muted,
+    TextSize = 10, Font = Enum.Font.Gotham, TextWrapped = true,
+}, movementStatusCard)
+task.spawn(function()
+    while scriptAlive do
+        local h = getHumanoid()
+        local root = h and h.Parent:FindFirstChild("HumanoidRootPart")
+        movementStatus.Text = h and string.format("Speed %g | Platform %s | Sit %s | Anchored %s | Move %.2f",
+            h.WalkSpeed, tostring(h.PlatformStand), tostring(h.Sit), tostring(root and root.Anchored), h.MoveDirection.Magnitude)
+            or "Waiting for character"
+        task.wait(0.5)
+    end
+end)
 speedConnection = RunService.Heartbeat:Connect(function()
     if not scriptAlive then speedConnection:Disconnect(); return end
     local humanoid = getHumanoid()
-    if humanoid and humanoid.WalkSpeed ~= SPEED then humanoid.WalkSpeed = SPEED end
+    if humanoid and humanoid.Health > 0 and humanoid.WalkSpeed > 0
+        and not humanoid.PlatformStand and not humanoid.Sit then
+        local root = humanoid.Parent:FindFirstChild("HumanoidRootPart")
+        if root and not root.Anchored and humanoid.WalkSpeed ~= SPEED then
+            humanoid.WalkSpeed = SPEED
+        end
+    end
 end)
 
 -- ---- Flight (BodyVelocity) ----
 local flying = false
 local flyBodyVelocity, flyBodyGyro, flyConnection
-local flightHumanoid
+local flightHumanoid, previousPlatformStand
+local flightSetPlatformStand = false
 
 local function stopFly()
     flying = false
@@ -563,15 +607,11 @@ local function stopFly()
     if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity = nil end
     if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
     setFlyToggle(false)
-
-    -- ★★★ ОСНОВНОЕ ИСПРАВЛЕНИЕ: всегда сбрасываем PlatformStand ★★★
-    local char = player.Character
-    if char then
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if hum then
-            hum.PlatformStand = false
-        end
+    -- Включаем гравитацию обратно
+    if flightHumanoid and flightHumanoid.Parent and flightSetPlatformStand then
+        flightHumanoid.PlatformStand = previousPlatformStand
     end
+    flightSetPlatformStand = false
     flightHumanoid = nil
 end
 
@@ -586,15 +626,10 @@ local function startFly()
     if not hum then return end
 
     flightHumanoid = hum
-    -- Для полёта на ПК ставим PlatformStand = true, чтобы отключить стандартное управление
-    if not UserInputService.TouchEnabled then
-        hum.PlatformStand = true
-    else
-        -- На телефоне оставляем PlatformStand как есть, но чтобы управление работало через джойстик,
-        -- мы не отключаем Humanoid.
-        -- Однако если на телефоне был включён PlatformStand (например, после смерти), сбрасываем.
-        hum.PlatformStand = false
-    end
+    previousPlatformStand = hum.PlatformStand
+    -- BodyVelocity удерживает высоту; на телефоне сохраняем обычный ввод Humanoid.
+    flightSetPlatformStand = not UserInputService.TouchEnabled and not hum.PlatformStand
+    if flightSetPlatformStand then hum.PlatformStand = true end
 
     flyBodyVelocity = Instance.new("BodyVelocity")
     flyBodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
@@ -608,7 +643,10 @@ local function startFly()
     setFlyToggle(true)
 
     flyConnection = RunService.Heartbeat:Connect(function(deltaTime)
-        if not flying or not root.Parent then return end
+        if not flying then return end
+        if not scriptAlive or player.Character ~= character or not root.Parent
+            or character:FindFirstChild("HumanoidRootPart") ~= root or hum.Health <= 0
+            or root.Anchored then stopFly(); return end
         local camera = workspace.CurrentCamera
         if not camera then return end
 
@@ -620,8 +658,10 @@ local function startFly()
         if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.yAxis end
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.yAxis end
 
-        -- Мобильное управление
+        -- На телефоне GetMoveVector читает именно левый джойстик.
         if UserInputService.TouchEnabled then
+            -- MoveDirection работает с большинством мобильных контроллеров;
+            -- PlayerModule используется как запасной вариант.
             local stick = hum.MoveDirection
             local stickIsWorldSpace = stick.Magnitude > 0
             if not stickIsWorldSpace and mobileControls then
@@ -641,6 +681,7 @@ local function startFly()
         if move.Magnitude > 0 then
             move = move.Unit * SPEED
             flyBodyVelocity.Velocity = move
+            -- Поворот в сторону движения
             flyBodyGyro.CFrame = CFrame.lookAt(root.Position, root.Position + move)
         else
             flyBodyVelocity.Velocity = Vector3.zero
@@ -652,12 +693,16 @@ flyButton.Activated:Connect(function()
     if getFlyToggle() then stopFly() else startFly() end
 end)
 
--- ★★★ ОБРАБОТЧИК ПЕРЕРОЖДЕНИЯ – сбрасываем PlatformStand и скорость ★★★
+player.CharacterRemoving:Connect(function()
+    stopFly()
+    stopNoclip()
+end)
+
 player.CharacterAdded:Connect(function(character)
     stopFly()
+    stopNoclip()
     local hum = character:WaitForChild("Humanoid")
     hum.WalkSpeed = SPEED
-    hum.PlatformStand = false   -- гарантируем, что управление работает
 end)
 
 -- ---- Логика Combat (Auto-Punch with Multi) ----
@@ -686,6 +731,7 @@ end
 local function resolveSelectedButton()
     local issue = buttonVisibilityIssue(selectedPunchButton)
     if not issue then return selectedPunchButton end
+    -- Rebind only an unambiguous visible replacement at the selected path.
     local replacement
     if selectedButtonPath then
         for _, candidate in ipairs(player.PlayerGui:GetDescendants()) do
@@ -776,6 +822,19 @@ local function findPunchButton()
     return nil
 end
 
+local function findBlockButton()
+    if not player.PlayerGui then return nil end
+    for _, child in ipairs(player.PlayerGui:GetDescendants()) do
+        if child:IsA("GuiButton") then
+            local name = child.Name:lower()
+            if name:find("block") or name:find("guard") or name:find("defend") then
+                return child
+            end
+        end
+    end
+    return nil
+end
+
 local function sendMouseClick(point)
     return pcall(function()
         if virtualInput then
@@ -794,6 +853,8 @@ local function activateGuiButton(button)
     if issue then return false, issue end
     local center = button.AbsolutePosition + button.AbsoluteSize / 2
 
+    -- На ПК нужен настоящий mouse input: firesignal может завершиться без ошибки,
+    -- но игра не обязана слушать GuiButton.Activated.
     if desktopInput then
         local ok, result = sendMouseClick(center)
         return ok and result, ok and nil or result
@@ -820,6 +881,7 @@ local function sendSelectedTouch()
         VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.Begin.Value, point.X, point.Y)
     end)
     if pressed then RunService.Heartbeat:Wait() end
+    -- Always attempt release, even if the menu was destroyed while waiting.
     local released, releaseError = pcall(function()
         VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.End.Value, point.X, point.Y)
     end)
@@ -870,6 +932,8 @@ local function punch()
         end
         return activateGuiButton(selectedPunchButton)
     end
+    -- Tool activation does not inject mouse input or change the touch controller.
+    -- Equip the fighting tool before enabling Auto punch.
     local button = findPunchButton()
     if button and button:IsA("GuiButton") then
         attackInputRoute = "GUI: " .. button.Name
@@ -897,12 +961,61 @@ local function punch()
     return false, "No equipped Tool or named attack button. Equip fists first."
 end
 
+-- Physical and synthetic input share UIS: this tracker is experimental.
+local spaceHeld = UserInputService:IsKeyDown(Enum.KeyCode.Space)
+local injectingSpace = false
+local blockCycleBusy = false
+UserInputService.InputBegan:Connect(function(input)
+    if scriptAlive and not injectingSpace and input.KeyCode == Enum.KeyCode.Space then spaceHeld = true end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if scriptAlive and not injectingSpace and input.KeyCode == Enum.KeyCode.Space then spaceHeld = false end
+end)
+UserInputService.WindowFocusReleased:Connect(function() spaceHeld = false end)
+player.CharacterRemoving:Connect(function() spaceHeld = false end)
+local function sendSpace(down)
+    injectingSpace = true
+    local ok, err = pcall(function()
+        if virtualInput then virtualInput:SendKey(down, Enum.KeyCode.Space, false)
+        else VirtualInputManager:SendKeyEvent(down, Enum.KeyCode.Space, false, game) end
+    end)
+    injectingSpace = false
+    return ok, err
+end
 local function performMultiPunch()
+    if getTestBlock() and desktopInput and spaceHeld then
+        if blockCycleBusy then return false, "Block test busy" end
+        blockCycleBusy = true
+        local character = player.Character
+        local ok, sent, reason = pcall(function()
+            local released, err = sendSpace(false)
+            if not released then return false, tostring(err) end
+            if blockPause > 0 then task.wait(blockPause / 1000) else RunService.Heartbeat:Wait() end
+            if not scriptAlive or not isAutoOn or panel.Visible or player.Character ~= character then
+                return false, "Block test cancelled"
+            end
+            local hit, message = punch()
+            if blockPause > 0 then task.wait(blockPause / 1000) else RunService.Heartbeat:Wait() end
+            return hit, message
+        end)
+        -- Restore only if the tracked physical hold and original character remain.
+        local restored, restoreError = sendSpace(scriptAlive and spaceHeld and player.Character == character)
+        blockCycleBusy = false
+        if not restored then return false, "Space restore failed: " .. tostring(restoreError) end
+        if not ok then return false, tostring(sent) end
+        return sent, reason
+    end
+
+    -- Меню уже закрывается пользователем один раз; не меняем его Visible в боевом цикле.
     for _ = 1, MULTI_PUNCH do
         if not scriptAlive then return false, "Script stopped" end
         local sent, reason = punch()
         if not sent then return false, reason end
     end
+
+    -- Между отдельными вызовами серии нет дополнительного task.wait.
+    -- Частота новых серий ограничивается отдельно в autoPunchLoop.
+
     return true
 end
 
@@ -965,6 +1078,8 @@ local function autoPunchLoop(generation)
                     local detail = not ok and tostring(sent) or tostring(reason or "Unknown attack input error")
                     attackStatus.Text = "PAUSED: " .. detail
                     attackStatus.TextColor3 = COLORS.danger
+                    -- Keep the user's selection, but show that attacks are unavailable.
+                    -- Retry slowly rather than flooding errors every frame.
                     task.wait(1)
                     if not scriptAlive or generation ~= autoGeneration then break end
                 else
@@ -980,12 +1095,14 @@ local function autoPunchLoop(generation)
             attackStatus.Text = "Waiting: no eligible target in range"
             attackStatus.TextColor3 = COLORS.muted
         end
+        -- Проверка цели не обязана выполняться все 60+ кадров в секунду.
         task.wait(0.1)
     end
 end
 
 local lastAutoTap = -math.huge
 toggleAuto.Activated:Connect(function()
+    -- Ignore duplicate activation events from one rapid touch.
     local now = os.clock()
     if now - lastAutoTap < 0.3 then return end
     lastAutoTap = now
@@ -1000,9 +1117,9 @@ toggleAuto.Activated:Connect(function()
         task.spawn(function()
             local ok, message = pcall(autoPunchLoop, generation)
             if not ok and scriptAlive and isAutoOn and generation == autoGeneration then
-                attackStatus.Text = "ERROR v3.8: " .. tostring(message)
+                attackStatus.Text = "ERROR v3.7: " .. tostring(message)
                 attackStatus.TextColor3 = COLORS.danger
-                warn("[Nexus v3.8] " .. tostring(message))
+                warn("[Nexus v3.7] " .. tostring(message))
             end
         end)
     end
@@ -1052,10 +1169,12 @@ local nameTags = {}
 local createESPForPlayer
 
 refreshESP = function()
+    -- Удаляем всё
     for plr, hl in pairs(highlightObjects) do hl:Destroy() end
     highlightObjects = {}
     for plr, tag in pairs(nameTags) do tag:Destroy() end
     nameTags = {}
+    -- Заново создаём
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= player then
             createESPForPlayer(plr)
@@ -1069,6 +1188,7 @@ createESPForPlayer = function(plr)
     if not char then return end
     if not ESP_ENABLED then return end
 
+    -- Highlight
     local hl = Instance.new("Highlight")
     hl.Adornee = char
     hl.FillColor = ESP_COLOR
@@ -1079,6 +1199,7 @@ createESPForPlayer = function(plr)
     hl.Parent = char
     highlightObjects[plr] = hl
 
+    -- Nametag
     if SHOW_NAMES then
         local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
         if head then
@@ -1108,6 +1229,7 @@ local function removeESPForPlayer(plr)
     if nameTags[plr] then nameTags[plr]:Destroy(); nameTags[plr] = nil end
 end
 
+-- Обработчики для ESP
 Players.PlayerAdded:Connect(function(plr)
     plr.CharacterAdded:Connect(function()
         task.wait(0.2)
@@ -1178,4 +1300,4 @@ panel.BackgroundTransparency = 1
 tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus v3.8] Исправлено движение после перерождения и телепортации")
+print("[Nexus v3.7] Mobile + PC interface loaded")
