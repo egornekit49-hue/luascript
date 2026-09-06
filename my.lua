@@ -158,7 +158,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "utility panel", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "input fix v3.1", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -791,15 +791,28 @@ local function autoPunchLoop(generation)
     end
 end
 
+local lastAutoTap = -math.huge
 toggleAuto.Activated:Connect(function()
+    -- Ignore duplicate activation events from one rapid touch.
+    local now = os.clock()
+    if now - lastAutoTap < 0.3 then return end
+    lastAutoTap = now
     autoGeneration = autoGeneration + 1
-    isAutoOn = not getAutoToggle()
+    isAutoOn = not isAutoOn
     setAutoToggle(isAutoOn)
     attackStatus.Text = isAutoOn and "Checking attack input..." or "Auto punch: OFF"
     attackStatus.TextColor3 = COLORS.muted
     if isAutoOn then
         lastPunchTime = 0
-        task.spawn(autoPunchLoop, autoGeneration)
+        local generation = autoGeneration
+        task.spawn(function()
+            local ok, message = pcall(autoPunchLoop, generation)
+            if not ok and scriptAlive and isAutoOn and generation == autoGeneration then
+                attackStatus.Text = "ERROR v3.1: " .. tostring(message)
+                attackStatus.TextColor3 = COLORS.danger
+                warn("[Nexus v3.1] " .. tostring(message))
+            end
+        end)
     end
 end)
 
