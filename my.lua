@@ -1,21 +1,22 @@
--- Скорость + ПОЛЁТ (БЕЗ ОГРАНИЧЕНИЙ)
+-- Script for Boxing Beta: Auto-Punch when opponent stops blocking
+-- Credit: Based on your request
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
 -- ====== НАСТРОЙКИ ======
-local SPEED = 50          -- скорость (и для бега, и для полёта)
-local STEP = 4            -- шаг кнопок +/-
+local PUNCH_DELAY = 500 -- Задержка между ударами в миллисекундах (по умолчанию 500 мс)
 
 -- ====== GUI ======
 local gui = Instance.new("ScreenGui")
-gui.Name = "SpeedControlGui"
+gui.Name = "AutoPunchGui"
 gui.Parent = game:GetService("CoreGui")
 
 local panel = Instance.new("Frame")
-panel.Size = UDim2.fromOffset(280, 200)
-panel.Position = UDim2.new(0, 20, 1, -220)
+panel.Size = UDim2.fromOffset(260, 120)
+panel.Position = UDim2.new(0, 20, 1, -140)
 panel.BackgroundColor3 = Color3.fromRGB(25, 28, 36)
 panel.BorderSizePixel = 0
 panel.Parent = gui
@@ -25,193 +26,177 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -24, 0, 32)
 title.Position = UDim2.fromOffset(12, 8)
 title.BackgroundTransparency = 1
-title.Text = "Скорость + Полет"
+title.Text = "Auto-Punch (Anti-Block)"
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.GothamBold
-title.TextSize = 19
+title.TextSize = 18
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = panel
 
-local function createButton(name, text, x, y)
-	local button = Instance.new("TextButton")
-	button.Name = name
-	button.Size = UDim2.fromOffset(50, 42)
-	button.Position = UDim2.fromOffset(x, y)
-	button.BackgroundColor3 = Color3.fromRGB(65, 104, 190)
-	button.BorderSizePixel = 0
-	button.Text = text
-	button.TextColor3 = Color3.new(1, 1, 1)
-	button.Font = Enum.Font.GothamBold
-	button.TextSize = 24
-	button.Parent = panel
-	Instance.new("UICorner", button).CornerRadius = UDim.new(0, 7)
-	return button
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.fromOffset(120, 26)
+statusLabel.Position = UDim2.fromOffset(12, 48)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "Status: OFF"
+statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+statusLabel.Font = Enum.Font.GothamBold
+statusLabel.TextSize = 16
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Parent = panel
+
+local toggleButton = Instance.new("TextButton")
+toggleButton.Size = UDim2.fromOffset(80, 32)
+toggleButton.Position = UDim2.fromOffset(170, 44)
+toggleButton.BackgroundColor3 = Color3.fromRGB(65, 104, 190)
+toggleButton.BorderSizePixel = 0
+toggleButton.Text = "Вкл"
+toggleButton.TextColor3 = Color3.new(1, 1, 1)
+toggleButton.Font = Enum.Font.GothamBold
+toggleButton.TextSize = 18
+toggleButton.Parent = panel
+Instance.new("UICorner", toggleButton).CornerRadius = UDim.new(0, 7)
+
+local delayBox = Instance.new("TextBox")
+delayBox.Size = UDim2.fromOffset(60, 26)
+delayBox.Position = UDim2.fromOffset(80, 84)
+delayBox.BackgroundColor3 = Color3.fromRGB(44, 49, 62)
+delayBox.BorderSizePixel = 0
+delayBox.Text = tostring(PUNCH_DELAY)
+delayBox.TextColor3 = Color3.new(1, 1, 1)
+delayBox.Font = Enum.Font.GothamBold
+delayBox.TextSize = 16
+delayBox.ClearTextOnFocus = false
+delayBox.Parent = panel
+Instance.new("UICorner", delayBox).CornerRadius = UDim.new(0, 7)
+
+local delayLabel = Instance.new("TextLabel")
+delayLabel.Size = UDim2.fromOffset(70, 26)
+delayLabel.Position = UDim2.fromOffset(12, 84)
+delayLabel.BackgroundTransparency = 1
+delayLabel.Text = "Задержка (мс):"
+delayLabel.TextColor3 = Color3.fromRGB(185, 190, 205)
+delayLabel.Font = Enum.Font.Gotham
+delayLabel.TextSize = 13
+delayLabel.TextXAlignment = Enum.TextXAlignment.Left
+delayLabel.Parent = panel
+
+-- ====== ЛОГИКА ======
+local isRunning = false
+local lastPunchTime = 0
+
+local function getNearestEnemy()
+    local character = player.Character
+    if not character then return nil end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return nil end
+
+    local nearest = nil
+    local nearestDist = math.huge
+    for _, otherPlayer in ipairs(Players:GetPlayers()) do
+        if otherPlayer ~= player then
+            local otherChar = otherPlayer.Character
+            if otherChar then
+                local otherRoot = otherChar:FindFirstChild("HumanoidRootPart")
+                if otherRoot then
+                    local dist = (rootPart.Position - otherRoot.Position).Magnitude
+                    if dist < nearestDist then
+                        nearestDist = dist
+                        nearest = otherChar
+                    end
+                end
+            end
+        end
+    end
+    return nearest
 end
 
-local decrease = createButton("Decrease", "-", 20, 52)
-local increase = createButton("Increase", "+", 180, 52)
+local function isBlocking(character)
+    -- Пытаемся найти анимацию блока или специфичный для игры атрибут.
+    -- В Boxing Beta блок, скорее всего, активирует анимацию или изменяет Humanoid.
+    -- Проверяем наличие анимации "Block" или состояние Humanoid.
+    local humanoid = character and character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
 
-local valueBox = Instance.new("TextBox")
-valueBox.Size = UDim2.fromOffset(90, 42)
-valueBox.Position = UDim2.fromOffset(80, 52)
-valueBox.BackgroundColor3 = Color3.fromRGB(44, 49, 62)
-valueBox.BorderSizePixel = 0
-valueBox.Text = tostring(SPEED)
-valueBox.TextColor3 = Color3.new(1, 1, 1)
-valueBox.Font = Enum.Font.GothamBold
-valueBox.TextSize = 20
-valueBox.ClearTextOnFocus = false
-valueBox.Parent = panel
-Instance.new("UICorner", valueBox).CornerRadius = UDim.new(0, 7)
+    -- Проверяем, не бежит ли персонаж (во время блока бег недоступен) [reference:0]
+    if humanoid.MoveDirection.Magnitude > 0.5 then
+        return false
+    end
 
--- Кнопка включения полёта
-local flyButton = Instance.new("TextButton")
-flyButton.Name = "FlyButton"
-flyButton.Size = UDim2.fromOffset(100, 36)
-flyButton.Position = UDim2.fromOffset(90, 108)
-flyButton.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
-flyButton.BorderSizePixel = 0
-flyButton.Text = "Fly: OFF"
-flyButton.TextColor3 = Color3.new(1, 1, 1)
-flyButton.Font = Enum.Font.GothamBold
-flyButton.TextSize = 18
-flyButton.Parent = panel
-Instance.new("UICorner", flyButton).CornerRadius = UDim.new(0, 7)
+    -- Проверяем анимации (это самый надежный способ, если анимация блока есть)
+    local animator = humanoid:FindFirstChild("Animator")
+    if animator then
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            if track.Animation and track.Animation.Name and string.lower(track.Animation.Name):find("block") then
+                return true
+            end
+        end
+    end
 
-local hint = Instance.new("TextLabel")
-hint.Size = UDim2.new(1, -24, 0, 26)
-hint.Position = UDim2.fromOffset(12, 158)
-hint.BackgroundTransparency = 1
-hint.Text = "WASD - движение, Пробел - вверх, Shift - вниз"
-hint.TextColor3 = Color3.fromRGB(185, 190, 205)
-hint.Font = Enum.Font.Gotham
-hint.TextSize = 13
-hint.Parent = panel
+    -- Альтернатива: проверка по значению WalkSpeed (при блоке она может быть 0)
+    if humanoid.WalkSpeed < 0.5 then
+        return true
+    end
 
--- ====== ЛОГИКА СКОРОСТИ (БЕЗ ОГРАНИЧЕНИЙ) ======
-local function getHumanoid()
-	local character = player.Character
-	if not character then return nil end
-	return character:FindFirstChild("Humanoid")
+    return false
 end
 
-local function setSpeed(newSpeed)
-	local val = tonumber(newSpeed)
-	if val then
-		SPEED = val
-	end
-	valueBox.Text = tostring(SPEED)
-	local hum = getHumanoid()
-	if hum then
-		hum.WalkSpeed = SPEED
-	end
+local function punch()
+    local character = player.Character
+    if not character then return end
+
+    -- Здесь нужно вызвать действие удара.
+    -- В Boxing Beta удар, вероятно, привязан к клавише или кнопке мыши.
+    -- Имитируем нажатие левой кнопки мыши.
+    mouse = player:GetMouse()
+    if mouse then
+        mouse.Button1Down:Fire()
+        task.wait(0.05)
+        mouse.Button1Up:Fire()
+    end
+
+    -- Альтернатива: если удар привязан к клавише (например, Q или E)
+    -- UserInputService:SetKeyDown(Enum.KeyCode.Q)
+    -- task.wait(0.05)
+    -- UserInputService:SetKeyUp(Enum.KeyCode.Q)
 end
 
-decrease.Activated:Connect(function() setSpeed(SPEED - STEP) end)
-increase.Activated:Connect(function() setSpeed(SPEED + STEP) end)
-valueBox.FocusLost:Connect(function()
-	setSpeed(valueBox.Text)
-end)
-
--- Постоянное обновление скорости (для борьбы со сбросами)
-RunService.Heartbeat:Connect(function()
-	local hum = getHumanoid()
-	if hum and hum.WalkSpeed ~= SPEED then
-		hum.WalkSpeed = SPEED
-	end
-end)
-
-player.CharacterAdded:Connect(function(character)
-	local hum = character:WaitForChild("Humanoid")
-	hum.WalkSpeed = SPEED
-end)
-
-task.wait(0.5)
-setSpeed(SPEED)
-
--- ====== ЛОГИКА ПОЛЁТА (использует ту же SPEED) ======
-local flying = false
-local flyBodyVelocity, flyBodyGyro
-local flyConnection
-
-local function startFly()
-	local character = player.Character
-	if not character then return end
-	local root = character:FindFirstChild("HumanoidRootPart")
-	local hum = character:FindFirstChild("Humanoid")
-	if not root or not hum then return end
-
-	hum.PlatformStand = true
-
-	flyBodyVelocity = Instance.new("BodyVelocity")
-	flyBodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-	flyBodyVelocity.Parent = root
-
-	flyBodyGyro = Instance.new("BodyGyro")
-	flyBodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-	flyBodyGyro.Parent = root
-
-	local function updateFly()
-		if not root or not flyBodyVelocity then return end
-		local camera = workspace.CurrentCamera
-		if not camera then return end
-
-		local forward = camera.CFrame.LookVector
-		local right = camera.CFrame.RightVector
-		local up = camera.CFrame.UpVector
-
-		local moveDirection = Vector3.new(0, 0, 0)
-		if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDirection = moveDirection + forward end
-		if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDirection = moveDirection - forward end
-		if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDirection = moveDirection - right end
-		if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDirection = moveDirection + right end
-		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDirection = moveDirection + up end
-		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDirection = moveDirection - up end
-
-		if moveDirection.Magnitude > 0 then
-			moveDirection = moveDirection.Unit * SPEED
-		else
-			moveDirection = Vector3.new(0, 0, 0)
-		end
-
-		flyBodyVelocity.Velocity = moveDirection
-
-		if moveDirection.Magnitude > 0.1 then
-			local targetCFrame = CFrame.lookAt(root.Position, root.Position + moveDirection)
-			flyBodyGyro.CFrame = targetCFrame
-		end
-	end
-
-	flyConnection = RunService.Heartbeat:Connect(updateFly)
-	flying = true
-	flyButton.Text = "Fly: ON"
-	flyButton.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+local function autoPunchLoop()
+    while isRunning do
+        local enemy = getNearestEnemy()
+        if enemy and not isBlocking(enemy) then
+            local currentTime = tick() * 1000
+            if currentTime - lastPunchTime >= PUNCH_DELAY then
+                punch()
+                lastPunchTime = currentTime
+            end
+        end
+        task.wait(0.05) -- Проверка каждые 50 мс для большей точности
+    end
 end
 
-local function stopFly()
-	if flyConnection then flyConnection:Disconnect() flyConnection = nil end
-	if flyBodyVelocity then flyBodyVelocity:Destroy() flyBodyVelocity = nil end
-	if flyBodyGyro then flyBodyGyro:Destroy() flyBodyGyro = nil end
-
-	local hum = getHumanoid()
-	if hum then
-		hum.PlatformStand = false
-	end
-	flying = false
-	flyButton.Text = "Fly: OFF"
-	flyButton.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
-end
-
-flyButton.Activated:Connect(function()
-	if flying then
-		stopFly()
-	else
-		startFly()
-	end
+toggleButton.Activated:Connect(function()
+    isRunning = not isRunning
+    if isRunning then
+        statusLabel.Text = "Status: ON"
+        statusLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+        toggleButton.Text = "Выкл"
+        lastPunchTime = 0
+        task.spawn(autoPunchLoop)
+    else
+        statusLabel.Text = "Status: OFF"
+        statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+        toggleButton.Text = "Вкл"
+    end
 end)
 
-player.CharacterAdded:Connect(function()
-	if flying then
-		stopFly()
-	end
+delayBox.FocusLost:Connect(function()
+    local newDelay = tonumber(delayBox.Text)
+    if newDelay and newDelay >= 0 then
+        PUNCH_DELAY = newDelay
+    else
+        delayBox.Text = tostring(PUNCH_DELAY)
+    end
 end)
+
+-- Базовая проверка при запуске
+print("Auto-Punch script loaded. Press 'Вкл' to start.")
