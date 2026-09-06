@@ -1,6 +1,4 @@
--- Nexus UI v4: Speed, Fly, Noclip, ESP, Auto-Punch + Reach (Teleport/Fake)
--- FIXED: Mobile punch via learned touch position
-
+-- Nexus UI v6: Auto-Punch with Smart Button Finder + Scroll Fix
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -16,7 +14,7 @@ pcall(function()
     mobileControls = playerModule:GetControls()
 end)
 
--- Настройки
+-- ====== НАСТРОЙКИ ======
 local SPEED = 50
 local STEP = 4
 local PUNCH_DELAY = 0
@@ -25,8 +23,12 @@ local PUNCH_WHILE_BLOCKING = false
 local BLOCK_SPEED_THRESHOLD = 0.5
 local AURA_RANGE = 10
 local SKIP_BLOCKING_TARGETS = true
-local REACH_MODE = 0   -- 0=off, 1=teleport, 2=fake
+local REACH_MODE = 0
 local REACH_RANGE = 30
+
+-- Координаты кнопки удара (по умолчанию правый нижний угол)
+local PUNCH_X = 0.85
+local PUNCH_Y = 0.75
 
 -- ESP
 local ESP_ENABLED = true
@@ -48,13 +50,12 @@ local COLORS = {
     accentDark = Color3.fromRGB(71,113,43), danger = Color3.fromRGB(239,91,105),
 }
 
--- Вспомогательные функции
 local function create(c,p,parent) local o=Instance.new(c) for k,v in pairs(p or {}) do o[k]=v end o.Parent=parent return o end
 local function corner(p,r) return create("UICorner",{CornerRadius=UDim.new(0,r)},p) end
 local function stroke(p,c,t) return create("UIStroke",{Color=c or COLORS.border,Transparency=t or 0,Thickness=1},p) end
 local function tween(o,p,d) local info=TweenInfo.new(d or .22,Enum.EasingStyle.Quint,Enum.EasingDirection.Out) local a=TweenService:Create(o,info,p) a:Play() return a end
 
--- GUI
+-- ---- GUI ----
 local oldGui = game:GetService("CoreGui"):FindFirstChild("SuperGuiModern")
 if oldGui then oldGui:Destroy() end
 local gui = create("ScreenGui",{Name="SuperGuiModern",ResetOnSpawn=false,IgnoreGuiInset=false,ZIndexBehavior=Enum.ZIndexBehavior.Sibling},game:GetService("CoreGui"))
@@ -62,7 +63,7 @@ local scriptAlive = true
 gui.Destroying:Connect(function() scriptAlive = false end)
 
 local dim = create("Frame",{Name="Dim",Size=UDim2.fromScale(1,1),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=1,BorderSizePixel=0,Active=false,Visible=not UserInputService.TouchEnabled},gui)
-local panel = create("Frame",{Name="Window",AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),Size=UDim2.fromOffset(620,560),BackgroundColor3=COLORS.window,BorderSizePixel=0,ClipsDescendants=true},gui)
+local panel = create("Frame",{Name="Window",AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),Size=UDim2.fromOffset(620,600),BackgroundColor3=COLORS.window,BorderSizePixel=0,ClipsDescendants=true},gui)
 corner(panel,14); stroke(panel,COLORS.border,.15)
 local scale = create("UIScale",{Scale=1},panel)
 local shadow=create("ImageLabel",{Name="Shadow",AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),Size=UDim2.new(1,42,1,42),BackgroundTransparency=1,Image="rbxassetid://6014261993",ImageColor3=Color3.new(0,0,0),ImageTransparency=.35,ScaleType=Enum.ScaleType.Slice,SliceCenter=Rect.new(49,49,450,450),ZIndex=-1},panel)
@@ -72,7 +73,7 @@ create("Frame",{AnchorPoint=Vector2.new(1,0),Position=UDim2.fromScale(1,0),Size=
 
 local logo=create("TextLabel",{Position=UDim2.fromOffset(18,18),Size=UDim2.new(1,-36,0,32),BackgroundTransparency=1,Text="● NEXUS",TextColor3=COLORS.text,Font=Enum.Font.GothamBold,TextSize=16,TextXAlignment=Enum.TextXAlignment.Left},sidebar)
 local dot=create("Frame",{Position=UDim2.fromOffset(18,53),Size=UDim2.fromOffset(5,5),BackgroundColor3=COLORS.accent,BorderSizePixel=0},sidebar); corner(dot,5)
-create("TextLabel",{Position=UDim2.fromOffset(29,46),Size=UDim2.new(1,-38,0,20),BackgroundTransparency=1,Text="v4 touch learn",TextColor3=COLORS.muted,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left},sidebar)
+create("TextLabel",{Position=UDim2.fromOffset(29,46),Size=UDim2.new(1,-38,0,20),BackgroundTransparency=1,Text="v6 scroll fix",TextColor3=COLORS.muted,Font=Enum.Font.Gotham,TextSize=10,TextXAlignment=Enum.TextXAlignment.Left},sidebar)
 
 local navHolder=create("Frame",{Position=UDim2.fromOffset(10,92),Size=UDim2.new(1,-20,0,160),BackgroundTransparency=1},sidebar)
 create("UIListLayout",{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder},navHolder)
@@ -87,8 +88,20 @@ local hideButton=create("TextButton",{AnchorPoint=Vector2.new(1,0),Position=UDim
 local body=create("Frame",{Position=UDim2.fromOffset(22,64),Size=UDim2.new(1,-44,1,-82),BackgroundTransparency=1,ClipsDescendants=true},content)
 
 local function makePage(name)
-    local page=create("ScrollingFrame",{Name=name,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=COLORS.accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=name==selectedPage},body)
-    create("UIListLayout",{Padding=UDim.new(0,10),SortOrder=Enum.SortOrder.LayoutOrder},page); pages[name]=page; return page
+    local page=create("ScrollingFrame",{
+        Name=name,
+        Size=UDim2.fromScale(1,1),
+        BackgroundTransparency=1,
+        BorderSizePixel=0,
+        ScrollBarThickness=4,
+        ScrollBarImageColor3=COLORS.accent,
+        CanvasSize=UDim2.new(0,0,0,0),
+        AutomaticCanvasSize=Enum.AutomaticSize.Y,
+        Visible=name==selectedPage,
+    },body)
+    create("UIListLayout",{Padding=UDim.new(0,10),SortOrder=Enum.SortOrder.LayoutOrder},page)
+    pages[name]=page
+    return page
 end
 local movementPage=makePage("Movement"); local combatPage=makePage("Combat"); local espPage=makePage("ESP")
 
@@ -172,8 +185,21 @@ end); gui.Destroying:Connect(stopNoclip)
 local autoCard=makeCard(combatPage,"Auto punch","Attacks nearest enemy when unblocked")
 local autoBtn,setAuto,getAuto=makeToggle(autoCard)
 local status=create("TextLabel",{Name="AttackStatus",Size=UDim2.new(1,-4,0,44),BackgroundTransparency=1,Text="Auto punch: OFF",TextColor3=COLORS.muted,Font=Enum.Font.Gotham,TextSize=11,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left},combatPage)
-local learnBtn=create("TextButton",{Name="LearnPunch",Size=UDim2.new(1,-4,0,44),BackgroundColor3=COLORS.surface,BorderSizePixel=0,Text="🔴 Learn punch position (tap once)",TextColor3=COLORS.text,Font=Enum.Font.GothamMedium,TextSize=12,AutoButtonColor=false},combatPage); corner(learnBtn,9)
-local testBtn=create("TextButton",{Name="TestTouch",Size=UDim2.new(1,-4,0,44),BackgroundColor3=COLORS.surface,BorderSizePixel=0,Text="Test learned punch",TextColor3=COLORS.text,Font=Enum.Font.GothamMedium,TextSize=12,AutoButtonColor=false},combatPage); corner(testBtn,9)
+
+-- Настройка координат удара
+local coordCard=makeCard(combatPage,"Punch button position","Adjust X and Y sliders",140)
+local xLabel=create("TextLabel",{Position=UDim2.fromOffset(15,45),Size=UDim2.new(0,30,0,20),BackgroundTransparency=1,Text="X:",TextColor3=COLORS.text,Font=Enum.Font.GothamBold,TextSize=13},coordCard)
+local xSlider=create("TextButton",{Position=UDim2.fromOffset(50,43),Size=UDim2.new(0,180,0,22),BackgroundColor3=COLORS.surface,BorderSizePixel=0,Text="",AutoButtonColor=false},coordCard); corner(xSlider,5)
+local xFill=create("Frame",{Size=UDim2.new(PUNCH_X,0,1,0),BackgroundColor3=COLORS.accent,BorderSizePixel=0},xSlider); corner(xFill,5)
+local xVal=create("TextLabel",{Position=UDim2.fromOffset(240,44),Size=UDim2.new(0,60,0,20),BackgroundTransparency=1,Text=tostring(math.round(PUNCH_X*100)).."%",TextColor3=COLORS.text,Font=Enum.Font.GothamBold,TextSize=13},coordCard)
+
+local yLabel=create("TextLabel",{Position=UDim2.fromOffset(15,75),Size=UDim2.new(0,30,0,20),BackgroundTransparency=1,Text="Y:",TextColor3=COLORS.text,Font=Enum.Font.GothamBold,TextSize=13},coordCard)
+local ySlider=create("TextButton",{Position=UDim2.fromOffset(50,73),Size=UDim2.new(0,180,0,22),BackgroundColor3=COLORS.surface,BorderSizePixel=0,Text="",AutoButtonColor=false},coordCard); corner(ySlider,5)
+local yFill=create("Frame",{Size=UDim2.new(PUNCH_Y,0,1,0),BackgroundColor3=COLORS.accent,BorderSizePixel=0},ySlider); corner(yFill,5)
+local yVal=create("TextLabel",{Position=UDim2.fromOffset(240,74),Size=UDim2.new(0,60,0,20),BackgroundTransparency=1,Text=tostring(math.round(PUNCH_Y*100)).."%",TextColor3=COLORS.text,Font=Enum.Font.GothamBold,TextSize=13},coordCard)
+
+local testBtn=create("TextButton",{Name="TestTouch",Size=UDim2.new(1,-4,0,44),BackgroundColor3=COLORS.surface,BorderSizePixel=0,Text="Test punch at current position",TextColor3=COLORS.text,Font=Enum.Font.GothamMedium,TextSize=12,AutoButtonColor=false},combatPage); corner(testBtn,9)
+
 local delayCard=makeCard(combatPage,"Punch delay (ms)","Delay between attack series")
 local dMin,dBox,dPlus=makeStepper(delayCard,tostring(PUNCH_DELAY))
 local multiCard=makeCard(combatPage,"Multi-punch count","Number of punches per activation (1-10)",94)
@@ -217,12 +243,12 @@ local panelShown=true
 local function setPanelShown(shown)
     if panelShown==shown then return end; panelShown=shown
     if shown then
-        panel.Visible=true; panel.Size=UDim2.fromOffset(580,520); panel.BackgroundTransparency=1
-        tween(panel,{Size=UDim2.fromOffset(620,560),BackgroundTransparency=0},.28)
+        panel.Visible=true; panel.Size=UDim2.fromOffset(580,560); panel.BackgroundTransparency=1
+        tween(panel,{Size=UDim2.fromOffset(620,600),BackgroundTransparency=0},.28)
         tween(dim,{BackgroundTransparency=UserInputService.TouchEnabled and .65 or 1},.25)
         restoreBtn.Visible=false
     else
-        local a=tween(panel,{Size=UDim2.fromOffset(580,520),BackgroundTransparency=1},.2)
+        local a=tween(panel,{Size=UDim2.fromOffset(580,560),BackgroundTransparency=1},.2)
         tween(dim,{BackgroundTransparency=1},.2)
         a.Completed:Once(function() if not panelShown then panel.Visible=false; restoreBtn.Visible=true end end)
     end
@@ -243,7 +269,7 @@ UserInputService.InputChanged:Connect(function(inp) if drag and inp==dragInput t
 
 local function updateScale()
     local vp=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800,600)
-    scale.Scale=math.clamp(math.min((vp.X-24)/620,(vp.Y-120)/560),.48,1)
+    scale.Scale=math.clamp(math.min((vp.X-24)/620,(vp.Y-120)/600),.48,1)
     if UserInputService.TouchEnabled then panel.AnchorPoint=Vector2.new(0.5,0); panel.Position=UDim2.new(0.5,0,0,8) end
 end
 updateScale(); if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale) end
@@ -309,71 +335,72 @@ end
 flyBtn.Activated:Connect(function() if getFly() then stopFly() else startFly() end end)
 player.CharacterAdded:Connect(function(char) stopFly(); char:WaitForChild("Humanoid").WalkSpeed=SPEED end)
 
--- ---- LEARN PUNCH POSITION ----
-local punchPos = nil  -- абсолютные координаты на экране (Vector2)
-local learning = false
-learnBtn.Activated:Connect(function()
-    if learning then return end
-    learning = true
-    learnBtn.Text = "👆 Tap the punch button NOW"
-    learnBtn.BackgroundColor3 = COLORS.danger
-    status.Text = "Learning mode: tap the actual punch button"
-    status.TextColor3 = COLORS.text
-    local connection
-    connection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-        if gameProcessed then return end
-        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            -- Запоминаем позицию касания
-            punchPos = input.Position
-            connection:Disconnect()
-            learning = false
-            learnBtn.Text = "✅ Punch learned! (" .. math.round(punchPos.X) .. ", " .. math.round(punchPos.Y) .. ")"
-            learnBtn.BackgroundColor3 = COLORS.accentDark
-            status.Text = "Punch position saved. Use Test button."
-            status.TextColor3 = COLORS.muted
-            -- Визуально показываем точку на экране
-            local dotMarker = create("Frame", {
-                Size = UDim2.fromOffset(20,20),
-                Position = UDim2.new(0, punchPos.X-10, 0, punchPos.Y-10),
-                BackgroundColor3 = Color3.fromRGB(0,255,0),
-                BackgroundTransparency = 0.3,
-                BorderSizePixel = 0,
-                ZIndex = 999,
-            }, gui)
-            corner(dotMarker, 10)
-            task.delay(2, function() dotMarker:Destroy() end)
+-- ---- УМНЫЙ ПОИСК КНОПКИ УДАРА ----
+local function findPunchButton()
+    if not player.PlayerGui then return nil end
+    -- Ищем по имени
+    for _, child in ipairs(player.PlayerGui:GetDescendants()) do
+        if child:IsA("GuiButton") then
+            local name = child.Name:lower()
+            if name:find("punch") or name:find("attack") or name:find("fight") or name:find("hit") or name:find("jab") then
+                return child
+            end
         end
-    end)
-    task.delay(8, function()
-        if learning then
-            connection:Disconnect()
-            learning = false
-            learnBtn.Text = "🔴 Timeout. Try again."
-            learnBtn.BackgroundColor3 = COLORS.surface
-            status.Text = "Learning timed out. Tap Learn again."
-            status.TextColor3 = COLORS.danger
+    end
+    -- Ищем по изображению (если ImageButton)
+    for _, child in ipairs(player.PlayerGui:GetDescendants()) do
+        if child:IsA("ImageButton") then
+            local image = child.Image
+            if image and (image:find("punch") or image:find("attack") or image:find("fist") or image:find("sword")) then
+                return child
+            end
         end
-    end)
-end)
+    end
+    -- Ищем по положению (если координаты совпадают)
+    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800,600)
+    local x = PUNCH_X * viewport.X
+    local y = PUNCH_Y * viewport.Y
+    for _, child in ipairs(player.PlayerGui:GetDescendants()) do
+        if child:IsA("GuiButton") then
+            local pos = child.AbsolutePosition
+            local size = child.AbsoluteSize
+            if pos.X <= x and pos.X + size.X >= x and pos.Y <= y and pos.Y + size.Y >= y then
+                return child
+            end
+        end
+    end
+    return nil
+end
 
--- ---- Punch function using learned position ----
+-- ---- ФУНКЦИЯ УДАРА (исправлена) ----
 local function punch()
-    if punchPos then
-        -- эмулируем касание в запомненной точке
+    -- Способ 1: найти кнопку и кликнуть
+    local button = findPunchButton()
+    if button then
         local ok, err = pcall(function()
-            VirtualInputManager:SendTouchEvent(999, 0, punchPos.X, punchPos.Y)
-            task.wait(0.05)
-            VirtualInputManager:SendTouchEvent(999, 1, punchPos.X, punchPos.Y)
+            button:Click()
         end)
         if ok then return true end
-        -- если не сработало, пробуем через button:Click() поиском по имени
     end
-    -- fallback: поиск кнопки
+
+    -- Способ 2: эмуляция касания через VirtualInputManager (если кнопка не найдена)
+    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800,600)
+    local x = PUNCH_X * viewport.X
+    local y = PUNCH_Y * viewport.Y
+    local ok, err = pcall(function()
+        VirtualInputManager:SendTouchEvent(999, 0, x, y)
+        task.wait(0.05)
+        VirtualInputManager:SendTouchEvent(999, 1, x, y)
+    end)
+    if ok then return true end
+
+    -- Способ 3: если ничего не помогло, пробуем кликнуть по любой кнопке в правом нижнем углу
     if player.PlayerGui then
         for _, child in ipairs(player.PlayerGui:GetDescendants()) do
             if child:IsA("GuiButton") then
-                local name = child.Name:lower()
-                if name:find("punch") or name:find("attack") or name:find("fight") or name:find("hit") or name:find("jab") then
+                local pos = child.AbsolutePosition
+                local size = child.AbsoluteSize
+                if pos.X + size.X > viewport.X * 0.7 and pos.Y + size.Y > viewport.Y * 0.7 then
                     pcall(function() child:Click() end)
                     return true
                 end
@@ -383,7 +410,47 @@ local function punch()
     return false
 end
 
--- ---- Reach logic (teleport/fake) ----
+-- ---- Slider logic ----
+local function updateSliders()
+    xFill.Size = UDim2.new(PUNCH_X, 0, 1, 0)
+    yFill.Size = UDim2.new(PUNCH_Y, 0, 1, 0)
+    xVal.Text = tostring(math.round(PUNCH_X * 100)) .. "%"
+    yVal.Text = tostring(math.round(PUNCH_Y * 100)) .. "%"
+end
+
+local function setupSlider(slider, fill, label, variable, min, max, step)
+    local dragging = false
+    slider.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+        end
+    end)
+    slider.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    slider.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local pos = input.Position.X - slider.AbsolutePosition.X
+            local ratio = math.clamp(pos / slider.AbsoluteSize.X, 0, 1)
+            if variable == "x" then PUNCH_X = ratio else PUNCH_Y = ratio end
+            updateSliders()
+        end
+    end)
+end
+
+setupSlider(xSlider, xFill, xVal, "x", 0, 1, 0.01)
+setupSlider(ySlider, yFill, yVal, "y", 0, 1, 0.01)
+updateSliders()
+
+testBtn.Activated:Connect(function()
+    local ok, err = pcall(punch)
+    status.Text = ok and "Test punch sent" or "Test failed: " .. tostring(err)
+    status.TextColor3 = ok and COLORS.muted or COLORS.danger
+end)
+
+-- ---- Reach logic ----
 local function teleportToEnemy(enemyChar)
     if not enemyChar then return nil end
     local myChar=player.Character; if not myChar then return nil end
@@ -435,7 +502,6 @@ local function hookRemote()
         end
     end
     print("[Fake Reach] No RemoteEvent found. Trying tool extend.")
-    -- extend tool if possible
     local char=player.Character
     if char then
         local tool=char:FindFirstChildOfClass("Tool")
@@ -464,7 +530,6 @@ local function performMultiPunch()
     local originalPos = nil
     local enemyChar = nil
     if useReach then
-        -- find nearest enemy in range
         local myChar=player.Character; local myRoot=myChar and myChar:FindFirstChild("HumanoidRootPart")
         if myRoot then
             local minDist=math.huge
@@ -549,7 +614,6 @@ local function getNearestEnemy()
 end
 local function autoPunchLoop(gen)
     while scriptAlive and isAutoOn and gen==autoGen do
-        if learning then RunService.Heartbeat:Wait(); continue end
         local enemy=getNearestEnemy()
         local now=tick()*1000
         if enemy then
@@ -635,13 +699,6 @@ rchMin.Activated:Connect(function() setReachRange(REACH_RANGE-1) end)
 rchPlus.Activated:Connect(function() setReachRange(REACH_RANGE+1) end)
 rchBox.FocusLost:Connect(function() setReachRange(rchBox.Text) end)
 
-testBtn.Activated:Connect(function()
-    if not punchPos then status.Text="Learn punch position first!"; status.TextColor3=COLORS.danger; return end
-    local ok,err=pcall(punch)
-    status.Text=ok and "Test punch sent" or "Test failed: "..tostring(err)
-    status.TextColor3=ok and COLORS.muted or COLORS.danger
-end)
-
 -- ---- ESP ----
 local highlightObjs={}; local nameTags={}
 refreshESP=function()
@@ -681,9 +738,9 @@ setEsp(ESP_ENABLED)
 setName(SHOW_NAMES)
 aBox.Text=string.format("%.2f",ESP_ALPHA)
 
-panel.Size=UDim2.fromOffset(580,520)
+panel.Size=UDim2.fromOffset(580,560)
 panel.BackgroundTransparency=1
-tween(panel,{Size=UDim2.fromOffset(620,560),BackgroundTransparency=0},.35)
+tween(panel,{Size=UDim2.fromOffset(620,600),BackgroundTransparency=0},.35)
 if UserInputService.TouchEnabled then tween(dim,{BackgroundTransparency=.65},.3) end
 
-print("[Nexus v4] Loaded. Learn punch position, then enable Auto.")
+print("[Nexus v6] Loaded. Use Test button to verify punch, then enable Auto.")
