@@ -1,4 +1,4 @@
--- Auto-Punch для Boxing Beta (исправленная версия)
+-- Auto-Punch для Boxing Beta (Mobile-версия)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -6,9 +6,9 @@ local player = Players.LocalPlayer
 
 -- ====== НАСТРОЙКИ ======
 local PUNCH_DELAY = 500   -- задержка между ударами (мс)
-local BLOCK_SPEED = 0.5   -- порог скорости, при котором считается, что игрок блокирует
+local BLOCK_SPEED = 0.5   -- порог скорости для определения блока
 
--- ====== GUI ======
+-- ====== GUI (как был, без изменений) ======
 local gui = Instance.new("ScreenGui")
 gui.Name = "AutoPunchGui"
 gui.Parent = game:GetService("CoreGui")
@@ -79,6 +79,19 @@ delayLabel.TextSize = 13
 delayLabel.TextXAlignment = Enum.TextXAlignment.Left
 delayLabel.Parent = panel
 
+-- ====== ПОИСК REMOTEEVENT ДЛЯ УДАРА ======
+local punchRemote = nil
+for _, service in ipairs({game:GetService("ReplicatedStorage"), game:GetService("Players").LocalPlayer.PlayerGui}) do
+    for _, obj in ipairs(service:GetChildren()) do
+        if obj:IsA("RemoteEvent") and (string.lower(obj.Name):find("punch") or string.lower(obj.Name):find("hit") or string.lower(obj.Name):find("attack")) then
+            punchRemote = obj
+            print("[Auto-Punch] Найден RemoteEvent для удара:", obj.Name)
+            break
+        end
+    end
+    if punchRemote then break end
+end
+
 -- ====== ЛОГИКА ======
 local isRunning = false
 local lastPunchTime = 0
@@ -118,18 +131,21 @@ local function isBlocking(character)
     return false
 end
 
--- ИСПРАВЛЕННАЯ ФУНКЦИЯ УДАРА
+-- ИСПРАВЛЕННАЯ ФУНКЦИЯ УДАРА ДЛЯ ТЕЛЕФОНА
 local function punch()
-    -- Вариант 1: через клавишу Q (замени на нужную)
-    UserInputService:SetKeyDown(Enum.KeyCode.Q)
-    task.wait(0.05)
-    UserInputService:SetKeyUp(Enum.KeyCode.Q)
-    
-    -- Вариант 2: через левую кнопку мыши (раскомментируй, если нужен)
-    -- local input = {UserInputType = Enum.UserInputType.MouseButton1}
-    -- UserInputService:InputBegan(input, false)
-    -- task.wait(0.05)
-    -- UserInputService:InputEnded(input, false)
+    if punchRemote then
+        -- Если нашли RemoteEvent – используем его
+        punchRemote:FireServer()
+    else
+        -- Иначе эмулируем касание в центре экрана
+        local touchInput = {
+            UserInputType = Enum.UserInputType.Touch,
+            Position = UDim2.new(0.5, 0, 0.5, 0)
+        }
+        UserInputService:InputBegan(touchInput, false)
+        task.wait(0.05)
+        UserInputService:InputEnded(touchInput, false)
+    end
 end
 
 local function autoPunchLoop()
@@ -170,4 +186,9 @@ delayBox.FocusLost:Connect(function()
     end
 end)
 
-print("[Auto-Punch] Скрипт загружен. Нажми 'Вкл'.")
+print("[Auto-Punch] Скрипт для телефона загружен. Нажми 'Вкл'.")
+if punchRemote then
+    print("[Auto-Punch] Используется RemoteEvent: " .. punchRemote.Name)
+else
+    print("[Auto-Punch] RemoteEvent не найден, будет эмуляция касания.")
+end
