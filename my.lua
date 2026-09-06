@@ -164,7 +164,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "mobile + pc v3.9", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "mobile + pc v4.0", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -701,6 +701,7 @@ local touchBusy = false
 local touchFailure
 local touchTesting = false
 local syntheticTouchId = 912837
+local sendTouchToButton
 local selectingPunch = false
 local selectionConnections = {}
 local selectionGeneration = 0
@@ -762,6 +763,8 @@ local function findPunchButton()
     discoveredPunchButton = nil
     if time() < nextPunchButtonScan then return nil end
     nextPunchButtonScan = time() + 2
+    local fallback, fallbackScore
+    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800, 600)
     for _, child in ipairs(player.PlayerGui:GetDescendants()) do
         if child:IsA("GuiButton") and not buttonVisibilityIssue(child) then
             local name = child.Name:lower()
@@ -769,9 +772,19 @@ local function findPunchButton()
                 discoveredPunchButton = child
                 return child
             end
+            -- В Boxing Beta кнопка кулака может называться просто "button".
+            local center = child.AbsolutePosition + child.AbsoluteSize / 2
+            if center.X > viewport.X * 0.68 and center.Y > viewport.Y * 0.55 then
+                local score = center.Y / math.max(viewport.Y, 1) +
+                    math.min(child.AbsoluteSize.X, child.AbsoluteSize.Y) / 250
+                if not fallbackScore or score > fallbackScore then
+                    fallback, fallbackScore = child, score
+                end
+            end
         end
     end
-    return nil
+    discoveredPunchButton = fallback
+    return fallback
 end
 
 local function findBlockButton()
@@ -812,6 +825,10 @@ local function activateGuiButton(button)
         return ok and result, ok and nil or result
     end
 
+    if UserInputService.TouchEnabled and sendTouchToButton then
+        return sendTouchToButton(button)
+    end
+
     if type(firesignal) == "function" then
         local ok, message = pcall(function() firesignal(button.Activated) end)
         if ok then return true end
@@ -820,29 +837,37 @@ local function activateGuiButton(button)
     return false, "No supported attack input on this device (firesignal unavailable)"
 end
 
-local function sendSelectedTouch()
-    if touchFailure then return false, touchFailure end
+sendTouchToButton = function(object, offset)
     if touchBusy then return false, "Touch already in progress" end
-    if not selectedTouchOffset then return false, "Select using a real screen tap first" end
     if panel.Visible then return false, "Hide Nexus with X before touch attacks" end
-    local object, issue = resolveSelectedButton()
-    if not object then return false, issue end
-    local point = object.AbsolutePosition + selectedTouchOffset
+    local issue = buttonVisibilityIssue(object)
+    if issue then return false, issue end
+    local point = object.AbsolutePosition + (offset or object.AbsoluteSize / 2)
     touchBusy = true
+    syntheticTouchId = syntheticTouchId + 1
+    if syntheticTouchId > 913837 then syntheticTouchId = 912838 end
+    local currentTouchId = syntheticTouchId
     local pressed, pressError = pcall(function()
-        VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.Begin.Value, point.X, point.Y)
+        VirtualInputManager:SendTouchEvent(currentTouchId, Enum.UserInputState.Begin.Value, point.X, point.Y)
     end)
     if pressed then RunService.Heartbeat:Wait() end
     -- Always attempt release, even if the menu was destroyed while waiting.
     local released, releaseError = pcall(function()
-        VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.End.Value, point.X, point.Y)
+        VirtualInputManager:SendTouchEvent(currentTouchId, Enum.UserInputState.End.Value, point.X, point.Y)
     end)
     touchBusy = false
     if not pressed or not released then
         touchFailure = "Touch API rejected: " .. tostring(not pressed and pressError or releaseError)
         return false, touchFailure
     end
+    touchFailure = nil
     return true
+end
+
+local function sendSelectedTouch()
+    local object, issue = resolveSelectedButton()
+    if not object then return false, issue end
+    return sendTouchToButton(object, selectedTouchOffset)
 end
 
 testTouchButton.Activated:Connect(function()
@@ -869,26 +894,33 @@ end)
 local attackInputRoute = "unknown"
 local function punch()
     if UserInputService.TouchEnabled and selectedButtonPath then
-        attackInputRoute = "Touch: " .. selectedButtonPath
-        return sendSelectedTouch()
+        local resolved = resolveSelectedButton()
+        if resolved then
+            attackInputRoute = "Touch: " .. selectedButtonPath
+            return sendTouchToButton(resolved, selectedTouchOffset)
+        end
+        selectedPunchButton = nil
+        selectedButtonPath = nil
+        selectedButtonClass = nil
+        selectedTouchOffset = nil
     end
     if selectedPunchButton then
         if not selectedPunchButton:IsDescendantOf(player.PlayerGui) then
             selectedPunchButton = nil
-            return false, "Selected button was recreated; select the punch button again"
+        else
+            attackInputRoute = "Selected GUI: " .. selectedPunchButton.Name
+            if UserInputService.TouchEnabled then
+                attackInputRoute = "Touch: " .. selectedPunchButton.Name
+                return sendTouchToButton(selectedPunchButton, selectedTouchOffset)
+            end
+            return activateGuiButton(selectedPunchButton)
         end
-        attackInputRoute = "Selected GUI: " .. selectedPunchButton.Name
-        if UserInputService.TouchEnabled then
-            attackInputRoute = "Touch: " .. selectedPunchButton.Name
-            return sendSelectedTouch()
-        end
-        return activateGuiButton(selectedPunchButton)
     end
     -- Tool activation does not inject mouse input or change the touch controller.
     -- Equip the fighting tool before enabling Auto punch.
     local button = findPunchButton()
     if button and button:IsA("GuiButton") then
-        attackInputRoute = "GUI: " .. button.Name
+        attackInputRoute = (UserInputService.TouchEnabled and "Touch GUI: " or "GUI: ") .. button.Name
         return activateGuiButton(button)
     end
 
@@ -1067,14 +1099,19 @@ toggleAuto.Activated:Connect(function()
     attackStatus.Text = isAutoOn and "Checking attack input..." or "Auto punch: OFF"
     attackStatus.TextColor3 = COLORS.muted
     if isAutoOn then
+        -- Любая разовая ошибка touch больше не блокирует последующие включения.
+        touchFailure = nil
+        touchBusy = false
+        discoveredPunchButton = nil
+        nextPunchButtonScan = 0
         lastPunchTime = 0
         local generation = autoGeneration
         task.spawn(function()
             local ok, message = pcall(autoPunchLoop, generation)
             if not ok and scriptAlive and isAutoOn and generation == autoGeneration then
-                attackStatus.Text = "ERROR v3.9: " .. tostring(message)
+                attackStatus.Text = "ERROR v4.0: " .. tostring(message)
                 attackStatus.TextColor3 = COLORS.danger
-                warn("[Nexus v3.9] " .. tostring(message))
+                warn("[Nexus v4.0] " .. tostring(message))
             end
         end)
     end
@@ -1264,4 +1301,4 @@ panel.BackgroundTransparency = 1
 tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus v3.9] Independent auto/hit delays loaded")
+print("[Nexus v4.0] Auto Punch self-healing input loaded")
