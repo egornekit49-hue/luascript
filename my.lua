@@ -1,20 +1,18 @@
--- Универсальный скрипт: Speed + Fly + Auto-Punch (Anti-Block)
--- Для Boxing Beta (и других игр)
-
+-- Финальный скрипт: Speed + Fly (CFrame) + Auto-Punch (универсальный)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager") -- если есть
 local player = Players.LocalPlayer
 
 -- ====== НАСТРОЙКИ ======
-local SPEED = 50               -- скорость бега/полёта (без ограничений)
-local STEP = 4                 -- шаг кнопок +/-
-local FLY_SPEED = 50           -- скорость полёта (используется та же SPEED, но можно разделить)
-local PUNCH_DELAY = 500        -- задержка между ударами (мс)
-local BLOCK_SPEED_THRESHOLD = 0.5  -- порог WalkSpeed, при котором считаем, что игрок блокирует
+local SPEED = 50
+local STEP = 4
+local PUNCH_DELAY = 50   -- мс
+local BLOCK_SPEED_THRESHOLD = 0.5
+local FLY_SPEED = 50
 
--- ====== GUI ======
+-- ====== GUI (зелёный) ======
 local gui = Instance.new("ScreenGui")
 gui.Name = "SuperGui"
 gui.Parent = game:GetService("CoreGui")
@@ -22,11 +20,12 @@ gui.Parent = game:GetService("CoreGui")
 local panel = Instance.new("Frame")
 panel.Size = UDim2.fromOffset(300, 280)
 panel.Position = UDim2.new(0, 10, 1, -290)
-panel.BackgroundColor3 = Color3.fromRGB(30, 60, 30)  -- тёмно-зелёный
+panel.BackgroundColor3 = Color3.fromRGB(30, 60, 30)
 panel.BorderSizePixel = 0
 panel.Parent = gui
 Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 10)
 
+-- Заголовок
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -24, 0, 32)
 title.Position = UDim2.fromOffset(12, 8)
@@ -38,7 +37,7 @@ title.TextSize = 18
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = panel
 
--- ====== СКОРОСТЬ ======
+-- Speed
 local speedLabel = Instance.new("TextLabel")
 speedLabel.Size = UDim2.fromOffset(60, 26)
 speedLabel.Position = UDim2.fromOffset(12, 48)
@@ -87,7 +86,7 @@ increase.TextSize = 24
 increase.Parent = panel
 Instance.new("UICorner", increase).CornerRadius = UDim.new(0, 7)
 
--- ====== ПОЛЁТ ======
+-- Fly
 local flyButton = Instance.new("TextButton")
 flyButton.Size = UDim2.fromOffset(100, 32)
 flyButton.Position = UDim2.fromOffset(12, 88)
@@ -100,7 +99,7 @@ flyButton.TextSize = 18
 flyButton.Parent = panel
 Instance.new("UICorner", flyButton).CornerRadius = UDim.new(0, 7)
 
--- ====== АВТО-УДАР ======
+-- Auto-Punch
 local autoLabel = Instance.new("TextLabel")
 autoLabel.Size = UDim2.fromOffset(100, 26)
 autoLabel.Position = UDim2.fromOffset(12, 132)
@@ -177,7 +176,6 @@ decrease.Activated:Connect(function() setSpeed(SPEED - STEP) end)
 increase.Activated:Connect(function() setSpeed(SPEED + STEP) end)
 valueBox.FocusLost:Connect(function() setSpeed(valueBox.Text) end)
 
--- Постоянное обновление скорости (против сбросов)
 RunService.Heartbeat:Connect(function()
     local hum = getHumanoid()
     if hum and hum.WalkSpeed ~= SPEED then hum.WalkSpeed = SPEED end
@@ -190,56 +188,37 @@ end)
 task.wait(0.5)
 setSpeed(SPEED)
 
--- ====== ЛОГИКА ПОЛЁТА ======
+-- ====== ПОЛЁТ (через CFrame, обходит блокировку BodyVelocity) ======
 local flying = false
-local flyBV, flyBG, flyConn
-
+local flyConnection
 local function startFly()
     local char = player.Character
     if not char then return end
     local root = char:FindFirstChild("HumanoidRootPart")
-    local hum = char:FindFirstChild("Humanoid")
-    if not root or not hum then return end
-    hum.PlatformStand = true
-    flyBV = Instance.new("BodyVelocity")
-    flyBV.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-    flyBV.Parent = root
-    flyBG = Instance.new("BodyGyro")
-    flyBG.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-    flyBG.Parent = root
-    local function update()
-        if not root or not flyBV then return end
-        local cam = workspace.CurrentCamera
-        if not cam then return end
-        local fwd = cam.CFrame.LookVector
-        local right = cam.CFrame.RightVector
-        local up = cam.CFrame.UpVector
-        local dir = Vector3.new(0,0,0)
-        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + fwd end
-        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - fwd end
-        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - right end
-        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + right end
-        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + up end
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - up end
-        if dir.Magnitude > 0 then dir = dir.Unit * SPEED else dir = Vector3.new(0,0,0) end
-        flyBV.Velocity = dir
-        if dir.Magnitude > 0.1 then
-            flyBG.CFrame = CFrame.lookAt(root.Position, root.Position + dir)
-        end
-    end
-    flyConn = RunService.Heartbeat:Connect(update)
+    if not root then return end
     flying = true
     flyButton.Text = "Fly: ON"
     flyButton.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+    flyConnection = RunService.Heartbeat:Connect(function()
+        if not flying or not root then return end
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local move = Vector3.new()
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + cam.CFrame.UpVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - cam.CFrame.UpVector end
+        if move.Magnitude > 0 then
+            root.CFrame = root.CFrame + move.Unit * SPEED * 0.1
+        end
+    end)
 end
 
 local function stopFly()
-    if flyConn then flyConn:Disconnect() flyConn = nil end
-    if flyBV then flyBV:Destroy() flyBV = nil end
-    if flyBG then flyBG:Destroy() flyBG = nil end
-    local hum = getHumanoid()
-    if hum then hum.PlatformStand = false end
     flying = false
+    if flyConnection then flyConnection:Disconnect() flyConnection = nil end
     flyButton.Text = "Fly: OFF"
     flyButton.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
 end
@@ -251,54 +230,79 @@ player.CharacterAdded:Connect(function()
     if flying then stopFly() end
 end)
 
--- ====== АВТО-УДАР (ANTI-BLOCK) ======
+-- ====== АВТО-УДАР (исправлен) ======
 local isAutoOn = false
-local wasBlocking = false
 local lastPunchTime = 0
 
--- Поиск RemoteEvent для удара (глубже)
-local function findPunchRemote()
-    local candidates = {}
-    -- Ищем во всех сервисах
-    for _, service in ipairs({ReplicatedStorage, game:GetService("Players"), game:GetService("Workspace")}) do
-        for _, obj in ipairs(service:GetDescendants()) do
-            if obj:IsA("RemoteEvent") and (string.lower(obj.Name):find("punch") or string.lower(obj.Name):find("hit") or string.lower(obj.Name):find("attack") or string.lower(obj.Name):find("damage")) then
-                table.insert(candidates, obj)
+-- Поиск кнопки удара в GUI
+local function findPunchButton()
+    local gui = player.PlayerGui
+    if not gui then return nil end
+    for _, child in ipairs(gui:GetDescendants()) do
+        if child:IsA("TextButton") then
+            local name = child.Name:lower()
+            if name:find("punch") or name:find("attack") or name:find("hit") or name:find("fight") then
+                return child
             end
         end
     end
-    -- Если несколько, берём тот, у которого имя наиболее подходящее
-    for _, ev in ipairs(candidates) do
-        if string.lower(ev.Name):find("punch") then return ev end
-    end
-    return candidates[1] -- или nil
+    return nil
 end
-local punchRemote = findPunchRemote()
-if punchRemote then
-    print("[Auto-Punch] RemoteEvent найден:", punchRemote.Name)
+
+local punchButton = findPunchButton()
+if punchButton then
+    print("[Auto-Punch] Найдена кнопка удара:", punchButton.Name)
 else
-    print("[Auto-Punch] RemoteEvent не найден, будет попытка через клавишу Q")
+    print("[Auto-Punch] Кнопка удара не найдена, будем использовать эмуляцию")
 end
 
 -- Функция удара
 local function punch()
-    if punchRemote then
-        -- Попробуем вызвать без аргументов или с пустой таблицей
-        local success, err = pcall(function()
-            punchRemote:FireServer()
-        end)
-        if not success then
-            -- Если не сработало, попробуем с аргументом
-            pcall(function()
-                punchRemote:FireServer({})
-            end)
-        end
-    else
-        -- Альтернатива: эмуляция клавиши Q (если удар привязан к Q)
-        UserInputService:SetKeyDown(Enum.KeyCode.Q)
-        task.wait(0.05)
-        UserInputService:SetKeyUp(Enum.KeyCode.Q)
+    -- Способ 1: кнопка в GUI
+    if punchButton and punchButton:IsA("TextButton") then
+        punchButton:Click()
+        return
     end
+
+    -- Способ 2: эмуляция касания через VirtualInputManager
+    if VirtualInputManager then
+        VirtualInputManager:SendTouchEvent(1, {UDim2.new(0.5, 0, 0.5, 0)}, false, 0, 0)
+        task.wait(0.05)
+        VirtualInputManager:SendTouchEvent(1, {UDim2.new(0.5, 0, 0.5, 0)}, true, 0, 0)
+        return
+    end
+
+    -- Способ 3: эмуляция клавиши (попробуем Q, E, F)
+    local keys = {Enum.KeyCode.Q, Enum.KeyCode.E, Enum.KeyCode.F}
+    for _, key in ipairs(keys) do
+        -- В Roblox нет SetKeyDown, но в некоторых эксплойтах есть функция для отправки нажатий
+        -- Попробуем через UserInputService:InputBegan (это событие, но некоторые эксплойты позволяют его вызвать)
+        local input = {
+            UserInputType = Enum.UserInputType.Keyboard,
+            KeyCode = key,
+            Position = Vector2.new()
+        }
+        UserInputService:InputBegan(input, false)
+        task.wait(0.05)
+        UserInputService:InputEnded(input, false)
+    end
+end
+
+local function isBlocking(char)
+    if not char then return false end
+    local hum = char:FindFirstChild("Humanoid")
+    if not hum then return false end
+    if hum.WalkSpeed <= BLOCK_SPEED_THRESHOLD then return true end
+    -- анимация
+    local animator = hum:FindFirstChild("Animator")
+    if animator then
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            if track.Animation and track.Animation.Name:lower():find("block") then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 local function getNearestEnemy()
@@ -325,41 +329,18 @@ local function getNearestEnemy()
     return nearest
 end
 
-local function isBlocking(char)
-    local hum = char and char:FindFirstChild("Humanoid")
-    if not hum then return false end
-    -- Проверяем скорость (может падать при блоке)
-    if hum.WalkSpeed <= BLOCK_SPEED_THRESHOLD then
-        return true
-    end
-    -- Проверяем анимацию
-    local animator = hum:FindFirstChild("Animator")
-    if animator then
-        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-            if track.Animation and track.Animation.Name and string.lower(track.Animation.Name):find("block") then
-                return true
-            end
-        end
-    end
-    return false
-end
-
 local function autoPunchLoop()
     while isAutoOn do
         local enemy = getNearestEnemy()
         if enemy then
             local nowBlocking = isBlocking(enemy)
-            -- Переход: был блок -> сейчас не блок
-            if wasBlocking and not nowBlocking then
+            if not nowBlocking then  -- УДАРЯЕМ, КОГДА НЕТ БЛОКА (без проверки перехода)
                 local currentTime = tick() * 1000
                 if currentTime - lastPunchTime >= PUNCH_DELAY then
                     punch()
                     lastPunchTime = currentTime
                 end
             end
-            wasBlocking = nowBlocking
-        else
-            wasBlocking = false
         end
         task.wait(0.05)
     end
@@ -371,14 +352,12 @@ toggleAuto.Activated:Connect(function()
         autoLabel.Text = "Auto-Punch: ON"
         autoLabel.TextColor3 = Color3.fromRGB(0.5, 1, 0.5)
         toggleAuto.Text = "Выкл"
-        wasBlocking = false
         lastPunchTime = 0
         task.spawn(autoPunchLoop)
     else
         autoLabel.Text = "Auto-Punch: OFF"
         autoLabel.TextColor3 = Color3.fromRGB(1, 0.5, 0.5)
         toggleAuto.Text = "Вкл"
-        wasBlocking = false
     end
 end)
 
@@ -391,4 +370,4 @@ delayBox.FocusLost:Connect(function()
     end
 end)
 
-print("[SuperScript] Загружен. Скорость, полёт и авто-удар активны.")
+print("[SuperScript] Загружен. Теперь бьёт, если противник не блокирует (даже если блока не было).")
