@@ -1,11 +1,11 @@
--- Скорость + ПОЛЁТ (без ограничений)
+-- Скорость + ПОЛЁТ (БЕЗ ОГРАНИЧЕНИЙ)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
 -- ====== НАСТРОЙКИ ======
-local SPEED = 50          -- скорость (бег и полёт)
+local SPEED = 50          -- скорость (и для бега, и для полёта)
 local STEP = 4            -- шаг кнопок +/-
 
 -- ====== GUI ======
@@ -88,7 +88,7 @@ hint.Font = Enum.Font.Gotham
 hint.TextSize = 13
 hint.Parent = panel
 
--- ====== ЛОГИКА СКОРОСТИ (без ограничений) ======
+-- ====== ЛОГИКА СКОРОСТИ (БЕЗ ОГРАНИЧЕНИЙ) ======
 local function getHumanoid()
 	local character = player.Character
 	if not character then return nil end
@@ -96,7 +96,6 @@ local function getHumanoid()
 end
 
 local function setSpeed(newSpeed)
-	-- Принимаем любое число (в том числе дробное)
 	local val = tonumber(newSpeed)
 	if val then
 		SPEED = val
@@ -170,7 +169,7 @@ local function startFly()
 		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDirection = moveDirection - up end
 
 		if moveDirection.Magnitude > 0 then
-			moveDirection = moveDirection.Unit * SPEED   -- используем SPEED для полёта
+			moveDirection = moveDirection.Unit * SPEED
 		else
 			moveDirection = Vector3.new(0, 0, 0)
 		end
