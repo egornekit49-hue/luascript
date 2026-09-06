@@ -19,8 +19,8 @@ end)
 -- Настройки по умолчанию
 local SPEED = 50
 local STEP = 4
-local PUNCH_DELAY = 500          -- задержка между сериями ударов
-local MULTI_PUNCH = 4            -- количество ударов за раз
+local PUNCH_DELAY = 0            -- без дополнительной задержки между сериями
+local MULTI_PUNCH = 10           -- десять вызовов подряд в серии
 local PUNCH_WHILE_BLOCKING = false
 local BLOCK_SPEED_THRESHOLD = 0.5
 local AURA_RANGE = 10 -- studs; controls activation, not the game's hit reach
@@ -331,6 +331,13 @@ local flyButton, setFlyToggle, getFlyToggle = makeToggle(flyCard)
 local autoCard = makeCard(combatPage, "Auto punch", "Attacks nearest enemy when unblocked")
 local toggleAuto, setAutoToggle, getAutoToggle = makeToggle(autoCard)
 
+local attackStatus = create("TextLabel", {
+    Name = "AttackStatus", Size = UDim2.new(1, -4, 0, 44),
+    BackgroundTransparency = 1, Text = "Auto punch: OFF",
+    TextColor3 = COLORS.muted, Font = Enum.Font.Gotham, TextSize = 11,
+    TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+}, combatPage)
+
 local delayCard = makeCard(combatPage, "Punch delay (ms)", "Delay between attack series")
 local delayMinus, delayBox, delayPlus = makeStepper(delayCard, tostring(PUNCH_DELAY))
 
@@ -608,9 +615,12 @@ local function findBlockButton()
 end
 
 local function activateGuiButton(button)
-    if firesignal then
-        local ok = pcall(function() firesignal(button.Activated) end)
+    if type(firesignal) == "function" then
+        local ok, message = pcall(function() firesignal(button.Activated) end)
         if ok then return true end
+        if UserInputService.TouchEnabled then
+            return false, "Activated failed: " .. tostring(message)
+        end
     end
     if VirtualInputManager and not UserInputService.TouchEnabled then
         local center = button.AbsolutePosition + button.AbsoluteSize / 2
@@ -619,21 +629,43 @@ local function activateGuiButton(button)
             VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 0)
         end)
     end
-    return false
+    return false, "No supported attack input on this device (firesignal unavailable)"
 end
 
+local attackInputRoute = "unknown"
 local function punch()
+    -- Tool activation does not inject mouse input or change the touch controller.
+    -- Equip the fighting tool before enabling Auto punch.
+    local character = player.Character
+    local equippedTool = character and character:FindFirstChildOfClass("Tool")
+    if equippedTool then
+        attackInputRoute = "Tool: " .. equippedTool.Name
+        if not equippedTool.Enabled then
+            return false, attackInputRoute .. " is disabled by the game / on cooldown"
+        end
+        if equippedTool.RequiresHandle and not equippedTool:FindFirstChild("Handle") then
+            return false, attackInputRoute .. " requires a missing Handle"
+        end
+        local ok, message = pcall(function()
+            equippedTool:Activate()
+            equippedTool:Deactivate()
+        end)
+        if not ok then return false, attackInputRoute .. ": " .. tostring(message) end
+        return true
+    end
     local button = findPunchButton()
     if button and button:IsA("GuiButton") then
+        attackInputRoute = "GUI: " .. button.Name
         return activateGuiButton(button)
     end
     if VirtualInputManager and not UserInputService.TouchEnabled then
+        attackInputRoute = "Desktop mouse"
         return pcall(function()
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
         end)
     end
-    return false
+    return false, "No equipped Tool or named attack button. Equip fists first."
 end
 
 local function getOwnBlockTracks()
@@ -657,7 +689,8 @@ local function performMultiPunch()
     -- Намеренно без task.wait: вся серия отправляется в одном кадре.
     for _ = 1, MULTI_PUNCH do
         if not scriptAlive then return false end
-        if not punch() then return false end
+        local sent, reason = punch()
+        if not sent then return false, reason end
     end
 
     -- Удары уже отправлены. Отдельно удерживаем ранее активный собственный блок.
@@ -731,17 +764,30 @@ local function autoPunchLoop(generation)
             local canPunch = (PUNCH_WHILE_BLOCKING or not selfBlocking)
                 and (not SKIP_BLOCKING_TARGETS or not enemyBlocking)
             if canPunch and now - lastPunchTime >= PUNCH_DELAY then
-                if not performMultiPunch() then
-                    isAutoOn = false
-                    setAutoToggle(false)
-                    pageSubtitle.Text = "Attack input unavailable — auto punch stopped"
-                    warn("[Nexus] Attack input failed; mouse emulation is disabled on touch devices.")
-                    break
+                local ok, sent, reason = pcall(performMultiPunch)
+                if not ok or not sent then
+                    local detail = not ok and tostring(sent) or tostring(reason or "Unknown attack input error")
+                    attackStatus.Text = "PAUSED: " .. detail
+                    attackStatus.TextColor3 = COLORS.danger
+                    -- Keep the user's selection, but show that attacks are unavailable.
+                    -- Retry slowly rather than flooding errors every frame.
+                    task.wait(1)
+                    if not scriptAlive or generation ~= autoGeneration then break end
+                else
+                    attackStatus.Text = string.format("%s | %d calls; damage NOT verified", attackInputRoute, MULTI_PUNCH)
+                    attackStatus.TextColor3 = COLORS.muted
                 end
                 lastPunchTime = now
+            elseif not canPunch then
+                attackStatus.Text = "Waiting: block filter"
+                attackStatus.TextColor3 = COLORS.muted
             end
+        else
+            attackStatus.Text = "Waiting: no eligible target in range"
+            attackStatus.TextColor3 = COLORS.muted
         end
-        task.wait(0.05)
+        -- Отдаём управление движку: при нулевой задержке следующая серия на следующем кадре.
+        RunService.Heartbeat:Wait()
     end
 end
 
@@ -749,6 +795,8 @@ toggleAuto.Activated:Connect(function()
     autoGeneration = autoGeneration + 1
     isAutoOn = not getAutoToggle()
     setAutoToggle(isAutoOn)
+    attackStatus.Text = isAutoOn and "Checking attack input..." or "Auto punch: OFF"
+    attackStatus.TextColor3 = COLORS.muted
     if isAutoOn then
         lastPunchTime = 0
         task.spawn(autoPunchLoop, autoGeneration)
