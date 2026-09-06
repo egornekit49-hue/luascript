@@ -1,16 +1,21 @@
--- LocalScript: StarterPlayer > StarterPlayerScripts > SpeedControlClient
+-- Эксплойт-скрипт для изменения скорости ТОЛЬКО СВОЕГО персонажа
+-- Работает в любой игре, защищён от сброса
 
 local Players = game:GetService("Players")
-
+local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
-local speed = 16
-local MIN_SPEED, MAX_SPEED, STEP = 4, 100, 4
 
+local SPEED = 50  -- твоя желаемая скорость
+local MIN_SPEED = 4
+local MAX_SPEED = 100
+local STEP = 4
+
+-- Создаём GUI в CoreGui (не удаляется играми)
 local gui = Instance.new("ScreenGui")
 gui.Name = "SpeedControlGui"
-gui.ResetOnSpawn = false
-gui.Parent = player:WaitForChild("PlayerGui")
+gui.Parent = game:GetService("CoreGui")  -- вместо PlayerGui
 
+-- Панель управления (такая же как была)
 local panel = Instance.new("Frame")
 panel.Size = UDim2.fromOffset(250, 145)
 panel.Position = UDim2.new(0, 20, 1, -165)
@@ -42,7 +47,6 @@ local function createButton(name, text, x)
 	button.Font = Enum.Font.GothamBold
 	button.TextSize = 24
 	button.Parent = panel
-
 	Instance.new("UICorner", button).CornerRadius = UDim.new(0, 7)
 	return button
 end
@@ -55,7 +59,7 @@ valueBox.Size = UDim2.fromOffset(90, 42)
 valueBox.Position = UDim2.fromOffset(80, 52)
 valueBox.BackgroundColor3 = Color3.fromRGB(44, 49, 62)
 valueBox.BorderSizePixel = 0
-valueBox.Text = tostring(speed)
+valueBox.Text = tostring(SPEED)
 valueBox.TextColor3 = Color3.new(1, 1, 1)
 valueBox.Font = Enum.Font.GothamBold
 valueBox.TextSize = 20
@@ -73,31 +77,58 @@ hint.Font = Enum.Font.Gotham
 hint.TextSize = 13
 hint.Parent = panel
 
+-- Функция для получения твоего Humanoid с защитой от ошибок
 local function getHumanoid()
-	local character = player.Character or player.CharacterAdded:Wait()
-	return character:WaitForChild("Humanoid")
+	local character = player.Character
+	if not character then return nil end
+	local humanoid = character:FindFirstChild("Humanoid")
+	return humanoid
 end
 
+-- Установка скорости с защитой
 local function setSpeed(newSpeed)
-	speed = math.clamp(math.round(newSpeed), MIN_SPEED, MAX_SPEED)
-	valueBox.Text = tostring(speed)
-	getHumanoid().WalkSpeed = speed
+	SPEED = math.clamp(math.round(newSpeed), MIN_SPEED, MAX_SPEED)
+	valueBox.Text = tostring(SPEED)
+	local hum = getHumanoid()
+	if hum then
+		hum.WalkSpeed = SPEED
+	end
 end
 
+-- Обработка кнопок
 decrease.Activated:Connect(function()
-	setSpeed(speed - STEP)
+	setSpeed(SPEED - STEP)
 end)
 
 increase.Activated:Connect(function()
-	setSpeed(speed + STEP)
+	setSpeed(SPEED + STEP)
 end)
 
 valueBox.FocusLost:Connect(function()
-	setSpeed(tonumber(valueBox.Text) or speed)
+	setSpeed(tonumber(valueBox.Text) or SPEED)
 end)
 
+-- Постоянное принудительное обновление скорости (бьёт сбросы)
+RunService.Heartbeat:Connect(function()
+	local hum = getHumanoid()
+	if hum and hum.WalkSpeed ~= SPEED then
+		hum.WalkSpeed = SPEED
+	end
+end)
+
+-- При перерождении персонажа – ставим скорость
 player.CharacterAdded:Connect(function(character)
-	character:WaitForChild("Humanoid").WalkSpeed = speed
+	local hum = character:WaitForChild("Humanoid")
+	hum.WalkSpeed = SPEED
 end)
 
-setSpeed(speed)
+-- Устанавливаем начальную скорость
+task.wait(0.5) -- даём игре время загрузить персонажа
+setSpeed(SPEED)
+
+-- Опционально: если хочешь скрыть GUI, нажми F9 (можно добавить)
+-- game:GetService("UserInputService").InputBegan:Connect(function(input)
+--     if input.KeyCode == Enum.KeyCode.F9 then
+--         gui.Enabled = not gui.Enabled
+--     end
+-- end)
