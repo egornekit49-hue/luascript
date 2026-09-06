@@ -1,4 +1,6 @@
--- Modern responsive Speed / Fly / Auto-Punch UI (исправленная версия)
+-- Nexus UI v2: Speed, Fly, Auto-Punch (Multi), ESP with Color Picker
+-- Fixed: mobile joystick conflict, punch through block, multi-hit
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -6,10 +8,32 @@ local TweenService = game:GetService("TweenService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local player = Players.LocalPlayer
+
+-- Настройки по умолчанию
 local SPEED = 50
 local STEP = 4
-local PUNCH_DELAY = 500
+local PUNCH_DELAY = 500          -- задержка между сериями ударов
+local MULTI_PUNCH = 4            -- количество ударов за раз
+local PUNCH_WHILE_BLOCKING = false
 local BLOCK_SPEED_THRESHOLD = 0.5
+
+-- Настройки ESP
+local ESP_ENABLED = true
+local ESP_COLOR = Color3.fromRGB(255, 0, 0)
+local ESP_ALPHA = 0.3
+local SHOW_NAMES = true
+
+-- Цветовая палитра для ESP
+local ESP_COLORS = {
+    Color3.fromRGB(255, 0, 0),   -- Красный
+    Color3.fromRGB(0, 255, 0),   -- Зелёный
+    Color3.fromRGB(0, 150, 255), -- Синий
+    Color3.fromRGB(255, 255, 0), -- Жёлтый
+    Color3.fromRGB(255, 0, 255), -- Фиолетовый
+    Color3.fromRGB(255, 165, 0), -- Оранжевый
+    Color3.fromRGB(255, 255, 255), -- Белый
+    Color3.fromRGB(0, 0, 0),     -- Чёрный
+}
 
 local COLORS = {
     window = Color3.fromRGB(15, 17, 21),
@@ -24,6 +48,7 @@ local COLORS = {
     danger = Color3.fromRGB(239, 91, 105),
 }
 
+-- ---- Вспомогательные функции ----
 local function create(className, properties, parent)
     local object = Instance.new(className)
     for key, value in pairs(properties or {}) do object[key] = value end
@@ -50,6 +75,7 @@ local function tween(object, properties, duration)
     return animation
 end
 
+-- ---- GUI ----
 local oldGui = game:GetService("CoreGui"):FindFirstChild("SuperGuiModern")
 if oldGui then oldGui:Destroy() end
 
@@ -72,7 +98,7 @@ local panel = create("Frame", {
     Name = "Window",
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(540, 350),
+    Size = UDim2.fromOffset(600, 420), -- чуть больше для ESP
     BackgroundColor3 = COLORS.window,
     BorderSizePixel = 0,
     ClipsDescendants = true,
@@ -123,7 +149,7 @@ create("TextLabel", {
 }, sidebar)
 
 local navHolder = create("Frame", {
-    Position = UDim2.fromOffset(10, 92), Size = UDim2.new(1, -20, 0, 104),
+    Position = UDim2.fromOffset(10, 92), Size = UDim2.new(1, -20, 0, 160),
     BackgroundTransparency = 1,
 }, sidebar)
 create("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder}, navHolder)
@@ -178,6 +204,7 @@ end
 
 local movementPage = makePage("Movement")
 local combatPage = makePage("Combat")
+local espPage = makePage("ESP")
 
 local function makeNav(name, glyph)
     local button = create("TextButton", {
@@ -199,7 +226,11 @@ local function makeNav(name, glyph)
         if selectedPage == name then return end
         selectedPage = name
         pageTitle.Text = name
-        pageSubtitle.Text = name == "Movement" and "Movement and flight settings" or "Automatic combat settings"
+        local sub = ""
+        if name == "Movement" then sub = "Movement and flight settings"
+        elseif name == "Combat" then sub = "Auto punch and multi-hit settings"
+        elseif name == "ESP" then sub = "Visuals and color picker" end
+        pageSubtitle.Text = sub
         for pageName, page in pairs(pages) do page.Visible = pageName == name end
         for buttonName, data in pairs(navButtons) do
             local active = buttonName == name
@@ -211,6 +242,7 @@ end
 
 makeNav("Movement", "◇")
 makeNav("Combat", "◎")
+makeNav("ESP", "◈")
 
 create("TextLabel", {
     AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -17),
@@ -219,6 +251,7 @@ create("TextLabel", {
     Font = Enum.Font.Gotham, TextSize = 9, TextWrapped = true,
 }, sidebar)
 
+-- ---- Компоненты UI ----
 local function makeCard(parent, titleText, description, height)
     local card = create("Frame", {
         Size = UDim2.new(1, -4, 0, height or 74), BackgroundColor3 = COLORS.surface,
@@ -273,15 +306,67 @@ local function makeToggle(parent)
     return button, set, function() return enabled end
 end
 
+-- ---- Movement Page ----
 local speedCard = makeCard(movementPage, "Walk speed", "Set character movement speed")
 local decrease, valueBox, increase = makeStepper(speedCard, tostring(SPEED))
-local flyCard = makeCard(movementPage, "Flight", "Camera-relative free movement")
+
+local flyCard = makeCard(movementPage, "Flight (BodyVelocity)", "Camera-relative free movement (mobile-friendly)")
 local flyButton, setFlyToggle, getFlyToggle = makeToggle(flyCard)
+
+-- ---- Combat Page ----
 local autoCard = makeCard(combatPage, "Auto punch", "Attacks nearest enemy when unblocked")
 local toggleAuto, setAutoToggle, getAutoToggle = makeToggle(autoCard)
-local delayCard = makeCard(combatPage, "Punch delay", "Delay between attacks in milliseconds")
+
+local delayCard = makeCard(combatPage, "Punch delay (ms)", "Delay between attack series")
 local delayMinus, delayBox, delayPlus = makeStepper(delayCard, tostring(PUNCH_DELAY))
 
+local multiCard = makeCard(combatPage, "Multi-punch count", "Number of punches per activation (1-10)", 94)
+local multiMinus, multiBox, multiPlus = makeStepper(multiCard, tostring(MULTI_PUNCH))
+
+local blockCard = makeCard(combatPage, "Punch while blocking", "Allow punching even when you are blocking")
+local blockToggle, setBlockToggle, getBlockToggle = makeToggle(blockCard)
+
+-- ---- ESP Page ----
+local espCard = makeCard(espPage, "ESP Enabled", "Show player highlights and nametags")
+local espToggle, setEspToggle, getEspToggle = makeToggle(espCard)
+
+local nameCard = makeCard(espPage, "Show Names", "Display player names above heads")
+local nameToggle, setNameToggle, getNameToggle = makeToggle(nameCard)
+
+local colorCard = makeCard(espPage, "Color Picker", "Select highlight color", 140)
+-- Палитра цветов
+local paletteHolder = create("Frame", {
+    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 30),
+    Size = UDim2.fromOffset(160, 60), BackgroundTransparency = 1,
+}, colorCard)
+local paletteGrid = create("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal,
+    HorizontalAlignment = Enum.HorizontalAlignment.Right,
+    VerticalAlignment = Enum.VerticalAlignment.Center,
+    Padding = UDim.new(0, 4),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, paletteHolder)
+
+local colorButtons = {}
+for i, color in ipairs(ESP_COLORS) do
+    local btn = create("TextButton", {
+        Size = UDim2.fromOffset(28, 28), BackgroundColor3 = color,
+        BorderSizePixel = 0, Text = "", AutoButtonColor = false,
+    }, paletteHolder)
+    corner(btn, 6)
+    stroke(btn, COLORS.border, 0.3)
+    btn.Activated:Connect(function()
+        ESP_COLOR = color
+        -- обновить все ESP
+        refreshESP()
+    end)
+    colorButtons[#colorButtons+1] = btn
+end
+
+local alphaCard = makeCard(espPage, "Alpha (transparency)", "Fill transparency (0-1)", 74)
+local alphaMinus, alphaBox, alphaPlus = makeStepper(alphaCard, string.format("%.2f", ESP_ALPHA))
+
+-- ---- Восстановление окна ----
 local restoreButton = create("TextButton", {
     Name = "Restore", AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -18, 1, -18),
     Size = UDim2.fromOffset(52, 52), BackgroundColor3 = COLORS.window, BorderSizePixel = 0,
@@ -297,13 +382,13 @@ local function setPanelShown(shown)
     panelShown = shown
     if shown then
         panel.Visible = true
-        panel.Size = UDim2.fromOffset(500, 320)
+        panel.Size = UDim2.fromOffset(560, 400)
         panel.BackgroundTransparency = 1
-        tween(panel, {Size = UDim2.fromOffset(540, 350), BackgroundTransparency = 0}, 0.28)
+        tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.28)
         tween(dim, {BackgroundTransparency = UserInputService.TouchEnabled and 0.65 or 1}, 0.25)
         restoreButton.Visible = false
     else
-        local animation = tween(panel, {Size = UDim2.fromOffset(500, 320), BackgroundTransparency = 1}, 0.2)
+        local animation = tween(panel, {Size = UDim2.fromOffset(560, 400), BackgroundTransparency = 1}, 0.2)
         tween(dim, {BackgroundTransparency = 1}, 0.2)
         animation.Completed:Once(function()
             if not panelShown then panel.Visible = false; restoreButton.Visible = true end
@@ -316,7 +401,7 @@ restoreButton.Activated:Connect(function() setPanelShown(true) end)
 hideButton.MouseEnter:Connect(function() tween(hideButton, {BackgroundColor3 = COLORS.surfaceHover, TextColor3 = COLORS.text}, 0.12) end)
 hideButton.MouseLeave:Connect(function() tween(hideButton, {BackgroundColor3 = COLORS.surface, TextColor3 = COLORS.muted}, 0.12) end)
 
--- Dragging works with both mouse and touch.
+-- ---- Перетаскивание ----
 local dragging, dragStart, startPosition, dragInput
 header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -336,14 +421,15 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
+-- ---- Масштабирование ----
 local function updateScale()
     local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800, 600)
-    scale.Scale = math.clamp(math.min((viewport.X - 24) / 540, (viewport.Y - 70) / 350), 0.62, 1)
+    scale.Scale = math.clamp(math.min((viewport.X - 24) / 600, (viewport.Y - 70) / 420), 0.62, 1)
 end
 updateScale()
 if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale) end
 
--- Movement logic
+-- ---- Логика Movement ----
 local function getHumanoid()
     local character = player.Character
     return character and character:FindFirstChildOfClass("Humanoid")
@@ -360,29 +446,54 @@ end
 decrease.Activated:Connect(function() setSpeed(SPEED - STEP) end)
 increase.Activated:Connect(function() setSpeed(SPEED + STEP) end)
 valueBox.FocusLost:Connect(function() setSpeed(valueBox.Text) end)
+
 RunService.Heartbeat:Connect(function()
     local humanoid = getHumanoid()
     if humanoid and humanoid.WalkSpeed ~= SPEED then humanoid.WalkSpeed = SPEED end
 end)
 
+-- ---- Flight (BodyVelocity) ----
 local flying = false
-local flyConnection
+local flyBodyVelocity, flyBodyGyro, flyConnection
+
 local function stopFly()
     flying = false
     if flyConnection then flyConnection:Disconnect(); flyConnection = nil end
+    if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity = nil end
+    if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
     setFlyToggle(false)
+    -- Включаем гравитацию обратно
+    local hum = getHumanoid()
+    if hum then hum.PlatformStand = false end
 end
 
 local function startFly()
     local character = player.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not character then return end
+    local root = character:FindFirstChild("HumanoidRootPart")
     if not root then return end
+    local hum = character:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+
+    -- Отключаем гравитацию (PlatformStand)
+    hum.PlatformStand = true
+
+    flyBodyVelocity = Instance.new("BodyVelocity")
+    flyBodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    flyBodyVelocity.Parent = root
+
+    flyBodyGyro = Instance.new("BodyGyro")
+    flyBodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    flyBodyGyro.Parent = root
+
     flying = true
     setFlyToggle(true)
+
     flyConnection = RunService.Heartbeat:Connect(function(deltaTime)
         if not flying or not root.Parent then return end
         local camera = workspace.CurrentCamera
         if not camera then return end
+
         local move = Vector3.zero
         if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + camera.CFrame.LookVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - camera.CFrame.LookVector end
@@ -390,18 +501,29 @@ local function startFly()
         if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + camera.CFrame.RightVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.yAxis end
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.yAxis end
-        if move.Magnitude > 0 then root.CFrame = root.CFrame + move.Unit * SPEED * deltaTime end
+
+        if move.Magnitude > 0 then
+            move = move.Unit * SPEED
+            flyBodyVelocity.Velocity = move
+            -- Поворот в сторону движения
+            flyBodyGyro.CFrame = CFrame.lookAt(root.Position, root.Position + move)
+        else
+            flyBodyVelocity.Velocity = Vector3.zero
+        end
     end)
 end
 
-flyButton.Activated:Connect(function() if getFlyToggle() then stopFly() else startFly() end end)
+flyButton.Activated:Connect(function()
+    if getFlyToggle() then stopFly() else startFly() end
+end)
+
 player.CharacterAdded:Connect(function(character)
     stopFly()
     local hum = character:WaitForChild("Humanoid")
     hum.WalkSpeed = SPEED
 end)
 
--- Combat logic
+-- ---- Логика Combat (Auto-Punch with Multi) ----
 local isAutoOn = false
 local lastPunchTime = 0
 
@@ -424,13 +546,19 @@ local function punch()
         button:Click()
         return
     end
-    -- Fallback: try VirtualInputManager
     if VirtualInputManager then
         pcall(function()
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
             task.wait(0.05)
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
         end)
+    end
+end
+
+local function performMultiPunch()
+    for i = 1, MULTI_PUNCH do
+        punch()
+        task.wait(0.05) -- небольшая задержка между ударами в серии
     end
 end
 
@@ -471,9 +599,19 @@ local function autoPunchLoop()
     while isAutoOn do
         local enemy = getNearestEnemy()
         local now = tick() * 1000
-        if enemy and not isBlocking(enemy) and now - lastPunchTime >= PUNCH_DELAY then
-            punch()
-            lastPunchTime = now
+        if enemy then
+            local enemyBlocking = isBlocking(enemy)
+            local selfBlocking = isBlocking(player.Character)
+            local canPunch = false
+            if PUNCH_WHILE_BLOCKING then
+                canPunch = not enemyBlocking
+            else
+                canPunch = (not enemyBlocking) and (not selfBlocking)
+            end
+            if canPunch and now - lastPunchTime >= PUNCH_DELAY then
+                performMultiPunch()
+                lastPunchTime = now
+            end
         end
         task.wait(0.05)
     end
@@ -497,10 +635,153 @@ delayMinus.Activated:Connect(function() setDelay(PUNCH_DELAY - 50) end)
 delayPlus.Activated:Connect(function() setDelay(PUNCH_DELAY + 50) end)
 delayBox.FocusLost:Connect(function() setDelay(delayBox.Text) end)
 
+local function setMulti(value)
+    local number = tonumber(value)
+    if number then MULTI_PUNCH = math.clamp(math.floor(number), 1, 10) end
+    multiBox.Text = tostring(MULTI_PUNCH)
+end
+multiMinus.Activated:Connect(function() setMulti(MULTI_PUNCH - 1) end)
+multiPlus.Activated:Connect(function() setMulti(MULTI_PUNCH + 1) end)
+multiBox.FocusLost:Connect(function() setMulti(multiBox.Text) end)
+
+blockToggle.Activated:Connect(function()
+    PUNCH_WHILE_BLOCKING = getBlockToggle()
+    setBlockToggle(PUNCH_WHILE_BLOCKING)
+end)
+
+-- ---- Логика ESP ----
+local highlightObjects = {}
+local nameTags = {}
+
+local function refreshESP()
+    -- Удаляем всё
+    for plr, hl in pairs(highlightObjects) do hl:Destroy() end
+    highlightObjects = {}
+    for plr, tag in pairs(nameTags) do tag:Destroy() end
+    nameTags = {}
+    -- Заново создаём
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= player then
+            createESPForPlayer(plr)
+        end
+    end
+end
+
+local function createESPForPlayer(plr)
+    if plr == player then return end
+    local char = plr.Character
+    if not char then return end
+    if not ESP_ENABLED then return end
+
+    -- Highlight
+    local hl = Instance.new("Highlight")
+    hl.Adornee = char
+    hl.FillColor = ESP_COLOR
+    hl.FillTransparency = ESP_ALPHA
+    hl.OutlineColor = Color3.new(1, 1, 1)
+    hl.OutlineTransparency = 0.2
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = char
+    highlightObjects[plr] = hl
+
+    -- Nametag
+    if SHOW_NAMES then
+        local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+        if head then
+            local bill = Instance.new("BillboardGui")
+            bill.Adornee = head
+            bill.Size = UDim2.fromOffset(120, 30)
+            bill.StudsOffset = Vector3.new(0, 2.5, 0)
+            bill.AlwaysOnTop = true
+            bill.Parent = char
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.new(1, 0, 1, 0)
+            label.BackgroundTransparency = 1
+            label.Text = plr.Name
+            label.TextColor3 = Color3.new(1, 1, 1)
+            label.Font = Enum.Font.GothamBold
+            label.TextSize = 18
+            label.TextStrokeColor3 = Color3.new(0, 0, 0)
+            label.TextStrokeTransparency = 0.3
+            label.Parent = bill
+            nameTags[plr] = bill
+        end
+    end
+end
+
+local function removeESPForPlayer(plr)
+    if highlightObjects[plr] then highlightObjects[plr]:Destroy(); highlightObjects[plr] = nil end
+    if nameTags[plr] then nameTags[plr]:Destroy(); nameTags[plr] = nil end
+end
+
+-- Обработчики для ESP
+Players.PlayerAdded:Connect(function(plr)
+    plr.CharacterAdded:Connect(function()
+        task.wait(0.2)
+        createESPForPlayer(plr)
+    end)
+    if plr.Character then
+        task.wait(0.2)
+        createESPForPlayer(plr)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(plr)
+    removeESPForPlayer(plr)
+end)
+
+espToggle.Activated:Connect(function()
+    ESP_ENABLED = getEspToggle()
+    setEspToggle(ESP_ENABLED)
+    if ESP_ENABLED then refreshESP() else
+        for plr, hl in pairs(highlightObjects) do hl:Destroy() end
+        highlightObjects = {}
+        for plr, tag in pairs(nameTags) do tag:Destroy() end
+        nameTags = {}
+    end
+end)
+
+nameToggle.Activated:Connect(function()
+    SHOW_NAMES = getNameToggle()
+    setNameToggle(SHOW_NAMES)
+    refreshESP()
+end)
+
+alphaMinus.Activated:Connect(function()
+    ESP_ALPHA = math.max(0, math.floor((ESP_ALPHA - 0.05) * 100) / 100)
+    alphaBox.Text = string.format("%.2f", ESP_ALPHA)
+    for plr, hl in pairs(highlightObjects) do hl.FillTransparency = ESP_ALPHA end
+end)
+alphaPlus.Activated:Connect(function()
+    ESP_ALPHA = math.min(1, math.floor((ESP_ALPHA + 0.05) * 100) / 100)
+    alphaBox.Text = string.format("%.2f", ESP_ALPHA)
+    for plr, hl in pairs(highlightObjects) do hl.FillTransparency = ESP_ALPHA end
+end)
+alphaBox.FocusLost:Connect(function()
+    local val = tonumber(alphaBox.Text)
+    if val then ESP_ALPHA = math.clamp(val, 0, 1) end
+    alphaBox.Text = string.format("%.2f", ESP_ALPHA)
+    for plr, hl in pairs(highlightObjects) do hl.FillTransparency = ESP_ALPHA end
+end)
+
+-- Инициализация ESP для существующих игроков
+for _, plr in ipairs(Players:GetPlayers()) do
+    if plr ~= player then
+        task.wait(0.1)
+        createESPForPlayer(plr)
+    end
+end
+
+-- ---- Инициализация ----
 setSpeed(SPEED)
-panel.Size = UDim2.fromOffset(500, 320)
+setBlockToggle(PUNCH_WHILE_BLOCKING)
+setEspToggle(ESP_ENABLED)
+setNameToggle(SHOW_NAMES)
+alphaBox.Text = string.format("%.2f", ESP_ALPHA)
+
+panel.Size = UDim2.fromOffset(560, 400)
 panel.BackgroundTransparency = 1
-tween(panel, {Size = UDim2.fromOffset(540, 350), BackgroundTransparency = 0}, 0.35)
+tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus] Modern interface loaded")
+print("[Nexus v2] Modern interface loaded. Enjoy!")
