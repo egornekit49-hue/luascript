@@ -158,7 +158,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "input fix v3.1", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "input fix v3.2", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -337,6 +337,14 @@ local attackStatus = create("TextLabel", {
     TextColor3 = COLORS.muted, Font = Enum.Font.Gotham, TextSize = 11,
     TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
 }, combatPage)
+
+local bindPunchButton = create("TextButton", {
+    Name = "BindPunch", Size = UDim2.new(1, -4, 0, 44),
+    BackgroundColor3 = COLORS.surface, BorderSizePixel = 0,
+    Text = "Select attack button", TextColor3 = COLORS.text,
+    Font = Enum.Font.GothamMedium, TextSize = 12, AutoButtonColor = false,
+}, combatPage)
+corner(bindPunchButton, 9)
 
 local delayCard = makeCard(combatPage, "Punch delay (ms)", "Delay between attack series")
 local delayMinus, delayBox, delayPlus = makeStepper(delayCard, tostring(PUNCH_DELAY))
@@ -587,8 +595,53 @@ end)
 -- ---- Логика Combat (Auto-Punch with Multi) ----
 local isAutoOn = false
 local lastPunchTime = 0
+local selectedPunchButton
+local selectingPunch = false
+local selectionConnections = {}
+local selectionGeneration = 0
+
+local function stopSelectingPunch()
+    selectingPunch = false
+    selectionGeneration = selectionGeneration + 1
+    for _, connection in ipairs(selectionConnections) do connection:Disconnect() end
+    table.clear(selectionConnections)
+end
+gui.Destroying:Connect(stopSelectingPunch)
+
+bindPunchButton.Activated:Connect(function()
+    stopSelectingPunch()
+    selectingPunch = true
+    local generation = selectionGeneration
+    attackStatus.Text = "Tap the actual punch button once; then reopen N"
+    attackStatus.TextColor3 = COLORS.muted
+    local function observe(object)
+        if not object:IsA("GuiButton") then return end
+        table.insert(selectionConnections, object.Activated:Connect(function()
+            if not selectingPunch or not scriptAlive then return end
+            selectedPunchButton = object
+            stopSelectingPunch()
+            bindPunchButton.Text = "Selected: " .. object.Name
+            attackStatus.Text = "Bound: " .. object:GetFullName()
+            attackStatus.TextColor3 = COLORS.muted
+        end))
+    end
+    for _, object in ipairs(player.PlayerGui:GetDescendants()) do observe(object) end
+    table.insert(selectionConnections, player.PlayerGui.DescendantAdded:Connect(observe))
+    setPanelShown(false)
+    task.delay(20, function()
+        if selectingPunch and generation == selectionGeneration and scriptAlive then
+            stopSelectingPunch()
+            attackStatus.Text = "No button selected. Equip fists and try Select attack button again."
+            attackStatus.TextColor3 = COLORS.danger
+        end
+    end)
+end)
 
 local function findPunchButton()
+    if selectedPunchButton and selectedPunchButton:IsDescendantOf(player.PlayerGui) then
+        return selectedPunchButton
+    end
+    selectedPunchButton = nil
     if not player.PlayerGui then return nil end
     for _, child in ipairs(player.PlayerGui:GetDescendants()) do
         if child:IsA("GuiButton") then
@@ -634,6 +687,14 @@ end
 
 local attackInputRoute = "unknown"
 local function punch()
+    if selectedPunchButton then
+        if not selectedPunchButton:IsDescendantOf(player.PlayerGui) then
+            selectedPunchButton = nil
+            return false, "Selected button was recreated; select the punch button again"
+        end
+        attackInputRoute = "Selected GUI: " .. selectedPunchButton.Name
+        return activateGuiButton(selectedPunchButton)
+    end
     -- Tool activation does not inject mouse input or change the touch controller.
     -- Equip the fighting tool before enabling Auto punch.
     local character = player.Character
@@ -756,6 +817,7 @@ end
 local autoGeneration = 0
 local function autoPunchLoop(generation)
     while scriptAlive and isAutoOn and generation == autoGeneration do
+        if selectingPunch then RunService.Heartbeat:Wait(); continue end
         local enemy = getNearestEnemy()
         local now = tick() * 1000
         if enemy then
