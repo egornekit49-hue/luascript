@@ -158,7 +158,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "input fix v3.2", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "touch test v3.3", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -345,6 +345,14 @@ local bindPunchButton = create("TextButton", {
     Font = Enum.Font.GothamMedium, TextSize = 12, AutoButtonColor = false,
 }, combatPage)
 corner(bindPunchButton, 9)
+
+local testTouchButton = create("TextButton", {
+    Name = "TestTouch", Size = UDim2.new(1, -4, 0, 44),
+    BackgroundColor3 = COLORS.surface, BorderSizePixel = 0,
+    Text = "Test one touch", TextColor3 = COLORS.text,
+    Font = Enum.Font.GothamMedium, TextSize = 12, AutoButtonColor = false,
+}, combatPage)
+corner(testTouchButton, 9)
 
 local delayCard = makeCard(combatPage, "Punch delay (ms)", "Delay between attack series")
 local delayMinus, delayBox, delayPlus = makeStepper(delayCard, tostring(PUNCH_DELAY))
@@ -596,6 +604,11 @@ end)
 local isAutoOn = false
 local lastPunchTime = 0
 local selectedPunchButton
+local selectedTouchOffset
+local touchBusy = false
+local touchFailure
+local touchTesting = false
+local syntheticTouchId = 912837
 local selectingPunch = false
 local selectionConnections = {}
 local selectionGeneration = 0
@@ -616,9 +629,11 @@ bindPunchButton.Activated:Connect(function()
     attackStatus.TextColor3 = COLORS.muted
     local function observe(object)
         if not object:IsA("GuiButton") then return end
-        table.insert(selectionConnections, object.Activated:Connect(function()
+        table.insert(selectionConnections, object.Activated:Connect(function(input)
             if not selectingPunch or not scriptAlive then return end
             selectedPunchButton = object
+            selectedTouchOffset = input and Vector2.new(input.Position.X, input.Position.Y) - object.AbsolutePosition or nil
+            touchFailure = nil
             stopSelectingPunch()
             bindPunchButton.Text = "Selected: " .. object.Name
             attackStatus.Text = "Bound: " .. object:GetFullName()
@@ -685,6 +700,60 @@ local function activateGuiButton(button)
     return false, "No supported attack input on this device (firesignal unavailable)"
 end
 
+local function sendSelectedTouch()
+    if touchFailure then return false, touchFailure end
+    if touchBusy then return false, "Touch already in progress" end
+    if not selectedPunchButton or not selectedPunchButton:IsDescendantOf(player.PlayerGui) then
+        return false, "Select attack button again"
+    end
+    if not selectedTouchOffset then return false, "Select using a real screen tap first" end
+    if panel.Visible then return false, "Hide Nexus with X before touch attacks" end
+    local object = selectedPunchButton
+    local ancestor = object
+    while ancestor and ancestor ~= player.PlayerGui do
+        if ancestor:IsA("GuiObject") and not ancestor.Visible then return false, "Attack button is hidden" end
+        if ancestor:IsA("ScreenGui") and not ancestor.Enabled then return false, "Attack screen is disabled" end
+        ancestor = ancestor.Parent
+    end
+    local point = object.AbsolutePosition + selectedTouchOffset
+    touchBusy = true
+    local pressed, pressError = pcall(function()
+        VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.Begin.Value, point.X, point.Y)
+    end)
+    if pressed then RunService.Heartbeat:Wait() end
+    -- Always attempt release, even if the menu was destroyed while waiting.
+    local released, releaseError = pcall(function()
+        VirtualInputManager:SendTouchEvent(syntheticTouchId, Enum.UserInputState.End.Value, point.X, point.Y)
+    end)
+    touchBusy = false
+    if not pressed or not released then
+        touchFailure = "Touch API rejected: " .. tostring(not pressed and pressError or releaseError)
+        return false, touchFailure
+    end
+    return true
+end
+
+testTouchButton.Activated:Connect(function()
+    if touchTesting then return end
+    if isAutoOn then
+        attackStatus.Text = "Turn Auto punch OFF before the single-touch test"
+        return
+    end
+    if not selectedPunchButton then attackStatus.Text = "Select attack button first"; return end
+    touchTesting = true
+    touchFailure = nil
+    setPanelShown(false)
+    task.delay(0.4, function()
+        if not scriptAlive then touchTesting = false; return end
+        local ok, sent, message = pcall(sendSelectedTouch)
+        touchTesting = false
+        if not scriptAlive then return end
+        attackStatus.Text = ok and sent and "Touch sent. Confirm whether an actual punch happened."
+            or tostring(ok and message or sent)
+        attackStatus.TextColor3 = ok and sent and COLORS.muted or COLORS.danger
+    end)
+end)
+
 local attackInputRoute = "unknown"
 local function punch()
     if selectedPunchButton then
@@ -693,6 +762,10 @@ local function punch()
             return false, "Selected button was recreated; select the punch button again"
         end
         attackInputRoute = "Selected GUI: " .. selectedPunchButton.Name
+        if UserInputService.TouchEnabled then
+            attackInputRoute = "Touch: " .. selectedPunchButton.Name
+            return sendSelectedTouch()
+        end
         return activateGuiButton(selectedPunchButton)
     end
     -- Tool activation does not inject mouse input or change the touch controller.
@@ -817,7 +890,7 @@ end
 local autoGeneration = 0
 local function autoPunchLoop(generation)
     while scriptAlive and isAutoOn and generation == autoGeneration do
-        if selectingPunch then RunService.Heartbeat:Wait(); continue end
+        if selectingPunch or touchTesting then RunService.Heartbeat:Wait(); continue end
         local enemy = getNearestEnemy()
         local now = tick() * 1000
         if enemy then
