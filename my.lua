@@ -1,5 +1,6 @@
 -- Nexus UI v2: Speed, Fly, Auto-Punch (Multi), ESP with Color Picker
 -- Fixed: mobile joystick conflict, punch through block, multi-hit
+-- Исправлено: time() -> tick()
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -158,7 +159,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "touch test v3.3", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "touch fix v3.4", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -326,6 +327,47 @@ local decrease, valueBox, increase = makeStepper(speedCard, tostring(SPEED))
 
 local flyCard = makeCard(movementPage, "Flight (BodyVelocity)", "Camera-relative free movement (mobile-friendly)")
 local flyButton, setFlyToggle, getFlyToggle = makeToggle(flyCard)
+
+local noclipCard = makeCard(movementPage, "Noclip", "Disable character collisions; may also pass through floors", 94)
+local noclipButton, setNoclipToggle, getNoclipToggle = makeToggle(noclipCard)
+local noclipConnection
+local originalCollisions = {}
+local noclipCharacter
+
+local function restoreCollisions()
+    for part, canCollide in pairs(originalCollisions) do
+        if part.Parent then part.CanCollide = canCollide end
+    end
+    table.clear(originalCollisions)
+end
+
+local function stopNoclip()
+    if noclipConnection then noclipConnection:Disconnect(); noclipConnection = nil end
+    restoreCollisions()
+    noclipCharacter = nil
+    setNoclipToggle(false)
+end
+
+noclipButton.Activated:Connect(function()
+    if getNoclipToggle() then stopNoclip(); return end
+    setNoclipToggle(true)
+    noclipConnection = RunService.Stepped:Connect(function()
+        if not scriptAlive then stopNoclip(); return end
+        local character = player.Character
+        if character ~= noclipCharacter then
+            restoreCollisions()
+            noclipCharacter = character
+        end
+        if not character then return end
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if originalCollisions[part] == nil then originalCollisions[part] = part.CanCollide end
+                part.CanCollide = false
+            end
+        end
+    end)
+end)
+gui.Destroying:Connect(stopNoclip)
 
 -- ---- Combat Page ----
 local autoCard = makeCard(combatPage, "Auto punch", "Attacks nearest enemy when unblocked")
@@ -605,6 +647,41 @@ local isAutoOn = false
 local lastPunchTime = 0
 local selectedPunchButton
 local selectedTouchOffset
+local selectedButtonPath
+local selectedButtonClass
+
+local function buttonVisibilityIssue(object)
+    if not object or not object:IsDescendantOf(player.PlayerGui) then return "Selected button was removed" end
+    local ancestor = object
+    while ancestor and ancestor ~= player.PlayerGui do
+        if ancestor:IsA("GuiObject") and not ancestor.Visible then
+            return "Hidden: " .. ancestor:GetFullName()
+        end
+        if ancestor:IsA("ScreenGui") and not ancestor.Enabled then
+            return "Disabled: " .. ancestor:GetFullName()
+        end
+        ancestor = ancestor.Parent
+    end
+    return nil
+end
+
+local function resolveSelectedButton()
+    local issue = buttonVisibilityIssue(selectedPunchButton)
+    if not issue then return selectedPunchButton end
+    -- Rebind only an unambiguous visible replacement at the selected path.
+    local replacement
+    if selectedButtonPath then
+        for _, candidate in ipairs(player.PlayerGui:GetDescendants()) do
+            if candidate.ClassName == selectedButtonClass and candidate:GetFullName() == selectedButtonPath
+                and not buttonVisibilityIssue(candidate) then
+                if replacement then return nil, "Multiple replacements; select attack button again" end
+                replacement = candidate
+            end
+        end
+    end
+    if replacement then selectedPunchButton = replacement; return replacement end
+    return nil, issue
+end
 local touchBusy = false
 local touchFailure
 local touchTesting = false
@@ -629,9 +706,13 @@ bindPunchButton.Activated:Connect(function()
     attackStatus.TextColor3 = COLORS.muted
     local function observe(object)
         if not object:IsA("GuiButton") then return end
-        table.insert(selectionConnections, object.Activated:Connect(function(input)
+        table.insert(selectionConnections, object.InputBegan:Connect(function(input)
             if not selectingPunch or not scriptAlive then return end
+            if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            if buttonVisibilityIssue(object) then return end
             selectedPunchButton = object
+            selectedButtonPath = object:GetFullName()
+            selectedButtonClass = object.ClassName
             selectedTouchOffset = input and Vector2.new(input.Position.X, input.Position.Y) - object.AbsolutePosition or nil
             touchFailure = nil
             stopSelectingPunch()
@@ -703,18 +784,10 @@ end
 local function sendSelectedTouch()
     if touchFailure then return false, touchFailure end
     if touchBusy then return false, "Touch already in progress" end
-    if not selectedPunchButton or not selectedPunchButton:IsDescendantOf(player.PlayerGui) then
-        return false, "Select attack button again"
-    end
     if not selectedTouchOffset then return false, "Select using a real screen tap first" end
     if panel.Visible then return false, "Hide Nexus with X before touch attacks" end
-    local object = selectedPunchButton
-    local ancestor = object
-    while ancestor and ancestor ~= player.PlayerGui do
-        if ancestor:IsA("GuiObject") and not ancestor.Visible then return false, "Attack button is hidden" end
-        if ancestor:IsA("ScreenGui") and not ancestor.Enabled then return false, "Attack screen is disabled" end
-        ancestor = ancestor.Parent
-    end
+    local object, issue = resolveSelectedButton()
+    if not object then return false, issue end
     local point = object.AbsolutePosition + selectedTouchOffset
     touchBusy = true
     local pressed, pressError = pcall(function()
@@ -756,6 +829,10 @@ end)
 
 local attackInputRoute = "unknown"
 local function punch()
+    if UserInputService.TouchEnabled and selectedButtonPath then
+        attackInputRoute = "Touch: " .. selectedButtonPath
+        return sendSelectedTouch()
+    end
     if selectedPunchButton then
         if not selectedPunchButton:IsDescendantOf(player.PlayerGui) then
             selectedPunchButton = nil
@@ -830,9 +907,9 @@ local function performMultiPunch()
     -- Удары уже отправлены. Отдельно удерживаем ранее активный собственный блок.
     if #ownBlockTracks > 0 then
         task.spawn(function()
-            local restoreUntil = time() + 0.2
+            local restoreUntil = tick() + 0.2   -- FIXED: time() -> tick()
             local blockWasRestored = false
-            while scriptAlive and time() < restoreUntil do
+            while scriptAlive and tick() < restoreUntil do  -- FIXED: time() -> tick()
                 for _, track in ipairs(ownBlockTracks) do
                     if not track.IsPlaying then
                         pcall(function() track:Play(0) end)
@@ -904,8 +981,6 @@ local function autoPunchLoop(generation)
                     local detail = not ok and tostring(sent) or tostring(reason or "Unknown attack input error")
                     attackStatus.Text = "PAUSED: " .. detail
                     attackStatus.TextColor3 = COLORS.danger
-                    -- Keep the user's selection, but show that attacks are unavailable.
-                    -- Retry slowly rather than flooding errors every frame.
                     task.wait(1)
                     if not scriptAlive or generation ~= autoGeneration then break end
                 else
