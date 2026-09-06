@@ -9,6 +9,13 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local player = Players.LocalPlayer
 
+-- Мобильный джойстик Roblox (не затрагивает управление камерой)
+local mobileControls
+pcall(function()
+    local playerModule = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
+    mobileControls = playerModule:GetControls()
+end)
+
 -- Настройки по умолчанию
 local SPEED = 50
 local STEP = 4
@@ -92,6 +99,7 @@ local dim = create("Frame", {
     BackgroundColor3 = Color3.new(0, 0, 0),
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
+    Active = false,
 }, gui)
 
 local panel = create("Frame", {
@@ -348,6 +356,7 @@ local paletteGrid = create("UIListLayout", {
 }, paletteHolder)
 
 local colorButtons = {}
+local refreshESP
 for i, color in ipairs(ESP_COLORS) do
     local btn = create("TextButton", {
         Size = UDim2.fromOffset(28, 28), BackgroundColor3 = color,
@@ -424,7 +433,7 @@ end)
 -- ---- Масштабирование ----
 local function updateScale()
     local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800, 600)
-    scale.Scale = math.clamp(math.min((viewport.X - 24) / 600, (viewport.Y - 70) / 420), 0.62, 1)
+    scale.Scale = math.clamp(math.min((viewport.X - 24) / 600, (viewport.Y - 120) / 420), 0.48, 1)
 end
 updateScale()
 if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale) end
@@ -501,6 +510,16 @@ local function startFly()
         if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + camera.CFrame.RightVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.yAxis end
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.yAxis end
+
+        -- На телефоне GetMoveVector читает именно левый джойстик.
+        if UserInputService.TouchEnabled and mobileControls then
+            local stick = mobileControls:GetMoveVector()
+            local flatLook = Vector3.new(camera.CFrame.LookVector.X, 0, camera.CFrame.LookVector.Z)
+            local flatRight = Vector3.new(camera.CFrame.RightVector.X, 0, camera.CFrame.RightVector.Z)
+            if flatLook.Magnitude > 0 then flatLook = flatLook.Unit end
+            if flatRight.Magnitude > 0 then flatRight = flatRight.Unit end
+            move = move + flatRight * stick.X - flatLook * stick.Z
+        end
 
         if move.Magnitude > 0 then
             move = move.Unit * SPEED
@@ -645,15 +664,16 @@ multiPlus.Activated:Connect(function() setMulti(MULTI_PUNCH + 1) end)
 multiBox.FocusLost:Connect(function() setMulti(multiBox.Text) end)
 
 blockToggle.Activated:Connect(function()
-    PUNCH_WHILE_BLOCKING = getBlockToggle()
+    PUNCH_WHILE_BLOCKING = not getBlockToggle()
     setBlockToggle(PUNCH_WHILE_BLOCKING)
 end)
 
 -- ---- Логика ESP ----
 local highlightObjects = {}
 local nameTags = {}
+local createESPForPlayer
 
-local function refreshESP()
+refreshESP = function()
     -- Удаляем всё
     for plr, hl in pairs(highlightObjects) do hl:Destroy() end
     highlightObjects = {}
@@ -667,7 +687,7 @@ local function refreshESP()
     end
 end
 
-local function createESPForPlayer(plr)
+createESPForPlayer = function(plr)
     if plr == player then return end
     local char = plr.Character
     if not char then return end
@@ -731,7 +751,7 @@ Players.PlayerRemoving:Connect(function(plr)
 end)
 
 espToggle.Activated:Connect(function()
-    ESP_ENABLED = getEspToggle()
+    ESP_ENABLED = not getEspToggle()
     setEspToggle(ESP_ENABLED)
     if ESP_ENABLED then refreshESP() else
         for plr, hl in pairs(highlightObjects) do hl:Destroy() end
@@ -742,7 +762,7 @@ espToggle.Activated:Connect(function()
 end)
 
 nameToggle.Activated:Connect(function()
-    SHOW_NAMES = getNameToggle()
+    SHOW_NAMES = not getNameToggle()
     setNameToggle(SHOW_NAMES)
     refreshESP()
 end)
