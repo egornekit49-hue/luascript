@@ -100,6 +100,7 @@ local dim = create("Frame", {
     BackgroundTransparency = 1,
     BorderSizePixel = 0,
     Active = false,
+    Visible = not UserInputService.TouchEnabled,
 }, gui)
 
 local panel = create("Frame", {
@@ -377,7 +378,7 @@ local alphaMinus, alphaBox, alphaPlus = makeStepper(alphaCard, string.format("%.
 
 -- ---- Восстановление окна ----
 local restoreButton = create("TextButton", {
-    Name = "Restore", AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -18, 1, -18),
+    Name = "Restore", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -18, 0, 18),
     Size = UDim2.fromOffset(52, 52), BackgroundColor3 = COLORS.window, BorderSizePixel = 0,
     Text = "N", TextColor3 = COLORS.accent, Font = Enum.Font.GothamBold, TextSize = 18,
     AutoButtonColor = false, Visible = false,
@@ -434,6 +435,11 @@ end)
 local function updateScale()
     local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(800, 600)
     scale.Scale = math.clamp(math.min((viewport.X - 24) / 600, (viewport.Y - 120) / 420), 0.48, 1)
+    if UserInputService.TouchEnabled then
+        -- Держим окно выше системного джойстика и кнопки прыжка.
+        panel.AnchorPoint = Vector2.new(0.5, 0)
+        panel.Position = UDim2.new(0.5, 0, 0, 8)
+    end
 end
 updateScale()
 if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale) end
@@ -512,13 +518,23 @@ local function startFly()
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.yAxis end
 
         -- На телефоне GetMoveVector читает именно левый джойстик.
-        if UserInputService.TouchEnabled and mobileControls then
-            local stick = mobileControls:GetMoveVector()
+        if UserInputService.TouchEnabled then
+            -- MoveDirection работает с большинством мобильных контроллеров;
+            -- PlayerModule используется как запасной вариант.
+            local stick = hum.MoveDirection
+            local stickIsWorldSpace = stick.Magnitude > 0
+            if not stickIsWorldSpace and mobileControls then
+                stick = mobileControls:GetMoveVector()
+            end
             local flatLook = Vector3.new(camera.CFrame.LookVector.X, 0, camera.CFrame.LookVector.Z)
             local flatRight = Vector3.new(camera.CFrame.RightVector.X, 0, camera.CFrame.RightVector.Z)
             if flatLook.Magnitude > 0 then flatLook = flatLook.Unit end
             if flatRight.Magnitude > 0 then flatRight = flatRight.Unit end
-            move = move + flatRight * stick.X - flatLook * stick.Z
+            if stickIsWorldSpace then
+                move = move + stick
+            else
+                move = move + flatRight * stick.X - flatLook * stick.Z
+            end
         end
 
         if move.Magnitude > 0 then
@@ -559,25 +575,92 @@ local function findPunchButton()
     return nil
 end
 
+local function findBlockButton()
+    if not player.PlayerGui then return nil end
+    for _, child in ipairs(player.PlayerGui:GetDescendants()) do
+        if child:IsA("GuiButton") then
+            local name = child.Name:lower()
+            if name:find("block") or name:find("guard") or name:find("defend") then
+                return child
+            end
+        end
+    end
+    return nil
+end
+
+local function activateGuiButton(button)
+    if firesignal then
+        local ok = pcall(function() firesignal(button.Activated) end)
+        if ok then return true end
+    end
+    if VirtualInputManager then
+        local center = button.AbsolutePosition + button.AbsoluteSize / 2
+        return pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, true, game, 0)
+            VirtualInputManager:SendMouseButtonEvent(center.X, center.Y, 0, false, game, 0)
+        end)
+    end
+    return false
+end
+
 local function punch()
     local button = findPunchButton()
     if button and button:IsA("GuiButton") then
-        button:Click()
-        return
+        return activateGuiButton(button)
     end
     if VirtualInputManager then
-        pcall(function()
+        return pcall(function()
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-            task.wait(0.05)
             VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
         end)
     end
+    return false
+end
+
+local function getOwnBlockTracks()
+    local tracks = {}
+    local humanoid = getHumanoid()
+    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+    if animator then
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            local animation = track.Animation
+            if animation and animation.Name:lower():find("block") then
+                table.insert(tracks, track)
+            end
+        end
+    end
+    return tracks
 end
 
 local function performMultiPunch()
-    for i = 1, MULTI_PUNCH do
+    local ownBlockTracks = PUNCH_WHILE_BLOCKING and getOwnBlockTracks() or {}
+
+    -- Намеренно без task.wait: вся серия отправляется в одном кадре.
+    for _ = 1, MULTI_PUNCH do
         punch()
-        task.wait(0.05) -- небольшая задержка между ударами в серии
+    end
+
+    -- Удары уже отправлены. Отдельно удерживаем ранее активный собственный блок.
+    if #ownBlockTracks > 0 then
+        task.spawn(function()
+            local restoreUntil = time() + 0.2
+            local blockWasRestored = false
+            while time() < restoreUntil do
+                for _, track in ipairs(ownBlockTracks) do
+                    if not track.IsPlaying then
+                        pcall(function() track:Play(0) end)
+                        blockWasRestored = true
+                    end
+                end
+                task.wait()
+            end
+
+            -- Если игра полностью остановила блок, повторно активируем найденную кнопку.
+            if blockWasRestored then
+                local blockButton = findBlockButton()
+                if blockButton then activateGuiButton(blockButton) end
+            end
+        end)
     end
 end
 
@@ -623,6 +706,7 @@ local function autoPunchLoop()
             local selfBlocking = isBlocking(player.Character)
             local canPunch = false
             if PUNCH_WHILE_BLOCKING then
+                -- Игнорируем только собственный блок; блок противника учитываем как раньше.
                 canPunch = not enemyBlocking
             else
                 canPunch = (not enemyBlocking) and (not selfBlocking)
