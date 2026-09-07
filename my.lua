@@ -1,6 +1,26 @@
 -- Nexus UI v2: Speed, Fly, Auto-Punch (Multi), ESP with Color Picker
--- Fixed: mobile joystick conflict, punch through block, multi-hit
+-- v3.7 audit fixes: lifecycle cleanup, cancellable attacks, input release.
 
+local scriptAlive = true
+local connections, cleanupCallbacks = {}, {}
+local function bind(signal, callback)
+    local connection = signal:Connect(function(...)
+        if scriptAlive then return callback(...) end
+    end)
+    table.insert(connections, connection)
+    return connection
+end
+local function cleanup()
+    if not scriptAlive then return end
+    scriptAlive = false
+    for _, connection in ipairs(connections) do connection:Disconnect() end
+    table.clear(connections)
+    for _, callback in ipairs(cleanupCallbacks) do
+        local ok, err = pcall(callback)
+        if not ok then warn("[Nexus cleanup] " .. tostring(err)) end
+    end
+    table.clear(cleanupCallbacks)
+end
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -92,7 +112,11 @@ end
 
 -- ---- GUI ----
 local oldGui = game:GetService("CoreGui"):FindFirstChild("SuperGuiModern")
-if oldGui then oldGui:Destroy() end
+if oldGui then
+    local shutdown = oldGui:FindFirstChild("NexusShutdown")
+    if shutdown and shutdown:IsA("BindableFunction") then pcall(function() shutdown:Invoke() end) end
+    oldGui:Destroy()
+end
 
 local gui = create("ScreenGui", {
     Name = "SuperGuiModern",
@@ -101,8 +125,11 @@ local gui = create("ScreenGui", {
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, game:GetService("CoreGui"))
 
-local scriptAlive = true
-gui.Destroying:Connect(function() scriptAlive = false end)
+local shutdown = Instance.new("BindableFunction")
+shutdown.Name = "NexusShutdown"
+shutdown.OnInvoke = cleanup
+shutdown.Parent = gui
+gui.Destroying:Connect(cleanup)
 
 local dim = create("Frame", {
     Name = "Dim",
@@ -164,7 +191,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "v3.7 movement + block test", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "v3.7 audit fix", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -242,7 +269,7 @@ local function makeNav(name, glyph)
     }, button)
     corner(marker, 3)
     navButtons[name] = {button = button, marker = marker}
-    button.Activated:Connect(function()
+    bind(button.Activated, function()
         if selectedPage == name then return end
         selectedPage = name
         pageTitle.Text = name
@@ -350,13 +377,13 @@ local function stopNoclip()
     if noclipConnection then noclipConnection:Disconnect(); noclipConnection = nil end
     restoreCollisions()
     noclipCharacter = nil
-    setNoclipToggle(false)
+    if scriptAlive then setNoclipToggle(false) end
 end
 
-noclipButton.Activated:Connect(function()
+bind(noclipButton.Activated, function()
     if getNoclipToggle() then stopNoclip(); return end
     setNoclipToggle(true)
-    noclipConnection = RunService.Stepped:Connect(function()
+    noclipConnection = bind(RunService.Stepped, function()
         if not scriptAlive then stopNoclip(); return end
         local character = player.Character
         if character ~= noclipCharacter then
@@ -372,7 +399,7 @@ noclipButton.Activated:Connect(function()
         end
     end)
 end)
-gui.Destroying:Connect(stopNoclip)
+table.insert(cleanupCallbacks, stopNoclip)
 
 -- ---- Combat Page ----
 local autoCard = makeCard(combatPage, "Auto punch", "Attacks nearest enemy when unblocked")
@@ -419,10 +446,10 @@ local function setBlockPause(value)
     if n and n == n and math.abs(n) < math.huge then blockPause = math.clamp(math.floor(n), 0, 500) end
     blockBox.Text = tostring(blockPause)
 end
-blockMinus.Activated:Connect(function() setBlockPause(blockPause - 10) end)
-blockPlus.Activated:Connect(function() setBlockPause(blockPause + 10) end)
-blockBox.FocusLost:Connect(function() setBlockPause(blockBox.Text) end)
-testBlockButton.Activated:Connect(function()
+bind(blockMinus.Activated, function() setBlockPause(blockPause - 10) end)
+bind(blockPlus.Activated, function() setBlockPause(blockPause + 10) end)
+bind(blockBox.FocusLost, function() setBlockPause(blockBox.Text) end)
+bind(testBlockButton.Activated, function()
     setTestBlock(desktopInput and not getTestBlock())
     if getTestBlock() then PUNCH_WHILE_BLOCKING = true; setBlockToggle(true) end
 end)
@@ -462,7 +489,7 @@ for i, color in ipairs(ESP_COLORS) do
     }, paletteHolder)
     corner(btn, 6)
     stroke(btn, COLORS.border, 0.3)
-    btn.Activated:Connect(function()
+    bind(btn.Activated, function()
         ESP_COLOR = color
         -- обновить все ESP
         refreshESP()
@@ -503,12 +530,12 @@ local function setPanelShown(shown)
     end
 end
 
-hideButton.Activated:Connect(function() setPanelShown(false) end)
-restoreButton.Activated:Connect(function() setPanelShown(true) end)
-hideButton.MouseEnter:Connect(function() tween(hideButton, {BackgroundColor3 = COLORS.surfaceHover, TextColor3 = COLORS.text}, 0.12) end)
-hideButton.MouseLeave:Connect(function() tween(hideButton, {BackgroundColor3 = COLORS.surface, TextColor3 = COLORS.muted}, 0.12) end)
+bind(hideButton.Activated, function() setPanelShown(false) end)
+bind(restoreButton.Activated, function() setPanelShown(true) end)
+bind(hideButton.MouseEnter, function() tween(hideButton, {BackgroundColor3 = COLORS.surfaceHover, TextColor3 = COLORS.text}, 0.12) end)
+bind(hideButton.MouseLeave, function() tween(hideButton, {BackgroundColor3 = COLORS.surface, TextColor3 = COLORS.muted}, 0.12) end)
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
+bind(UserInputService.InputBegan, function(input, gameProcessed)
     if gameProcessed or not desktopInput then return end
     if input.KeyCode == Enum.KeyCode.RightShift or input.KeyCode == Enum.KeyCode.Insert then
         setPanelShown(not panelShown)
@@ -517,18 +544,18 @@ end)
 
 -- ---- Перетаскивание ----
 local dragging, dragStart, startPosition, dragInput
-header.InputBegan:Connect(function(input)
+bind(header.InputBegan, function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         dragging, dragStart, startPosition = true, input.Position, panel.Position
-        input.Changed:Connect(function()
+        bind(input.Changed, function()
             if input.UserInputState == Enum.UserInputState.End then dragging = false end
         end)
     end
 end)
-header.InputChanged:Connect(function(input)
+bind(header.InputChanged, function(input)
     if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
 end)
-UserInputService.InputChanged:Connect(function(input)
+bind(UserInputService.InputChanged, function(input)
     if dragging and input == dragInput then
         local delta = input.Position - dragStart
         panel.Position = UDim2.new(startPosition.X.Scale, startPosition.X.Offset + delta.X, startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
@@ -546,7 +573,7 @@ local function updateScale()
     end
 end
 updateScale()
-if workspace.CurrentCamera then workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale) end
+if workspace.CurrentCamera then bind(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), updateScale) end
 
 -- ---- Логика Movement ----
 local function getHumanoid()
@@ -562,9 +589,9 @@ local function setSpeed(value)
     if humanoid then humanoid.WalkSpeed = SPEED end
 end
 
-decrease.Activated:Connect(function() setSpeed(SPEED - STEP) end)
-increase.Activated:Connect(function() setSpeed(SPEED + STEP) end)
-valueBox.FocusLost:Connect(function() setSpeed(valueBox.Text) end)
+bind(decrease.Activated, function() setSpeed(SPEED - STEP) end)
+bind(increase.Activated, function() setSpeed(SPEED + STEP) end)
+bind(valueBox.FocusLost, function() setSpeed(valueBox.Text) end)
 
 local speedConnection
 local movementStatusCard = makeCard(movementPage, "Movement state", "Read-only diagnostics after respawn / ring entry", 94)
@@ -583,7 +610,7 @@ task.spawn(function()
         task.wait(0.5)
     end
 end)
-speedConnection = RunService.Heartbeat:Connect(function()
+speedConnection = bind(RunService.Heartbeat, function()
     if not scriptAlive then speedConnection:Disconnect(); return end
     local humanoid = getHumanoid()
     if humanoid and humanoid.Health > 0 and humanoid.WalkSpeed > 0
@@ -606,16 +633,17 @@ local function stopFly()
     if flyConnection then flyConnection:Disconnect(); flyConnection = nil end
     if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity = nil end
     if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
-    setFlyToggle(false)
+    -- Restore physics before touching UI.
     -- Включаем гравитацию обратно
     if flightHumanoid and flightHumanoid.Parent and flightSetPlatformStand then
         flightHumanoid.PlatformStand = previousPlatformStand
     end
     flightSetPlatformStand = false
     flightHumanoid = nil
+    if scriptAlive then setFlyToggle(false) end
 end
 
-gui.Destroying:Connect(stopFly)
+table.insert(cleanupCallbacks, stopFly)
 
 local function startFly()
     local character = player.Character
@@ -642,7 +670,7 @@ local function startFly()
     flying = true
     setFlyToggle(true)
 
-    flyConnection = RunService.Heartbeat:Connect(function(deltaTime)
+    flyConnection = bind(RunService.Heartbeat, function(deltaTime)
         if not flying then return end
         if not scriptAlive or player.Character ~= character or not root.Parent
             or character:FindFirstChild("HumanoidRootPart") ~= root or hum.Health <= 0
@@ -689,20 +717,20 @@ local function startFly()
     end)
 end
 
-flyButton.Activated:Connect(function()
+bind(flyButton.Activated, function()
     if getFlyToggle() then stopFly() else startFly() end
 end)
 
-player.CharacterRemoving:Connect(function()
+bind(player.CharacterRemoving, function()
     stopFly()
     stopNoclip()
 end)
 
-player.CharacterAdded:Connect(function(character)
+bind(player.CharacterAdded, function(character)
     stopFly()
     stopNoclip()
     local hum = character:WaitForChild("Humanoid")
-    hum.WalkSpeed = SPEED
+    if scriptAlive and player.Character == character then hum.WalkSpeed = SPEED end
 end)
 
 -- ---- Логика Combat (Auto-Punch with Multi) ----
@@ -759,9 +787,9 @@ local function stopSelectingPunch()
     for _, connection in ipairs(selectionConnections) do connection:Disconnect() end
     table.clear(selectionConnections)
 end
-gui.Destroying:Connect(stopSelectingPunch)
+table.insert(cleanupCallbacks, stopSelectingPunch)
 
-bindPunchButton.Activated:Connect(function()
+bind(bindPunchButton.Activated, function()
     stopSelectingPunch()
     selectingPunch = true
     local generation = selectionGeneration
@@ -769,7 +797,7 @@ bindPunchButton.Activated:Connect(function()
     attackStatus.TextColor3 = COLORS.muted
     local function observe(object)
         if not object:IsA("GuiButton") then return end
-        table.insert(selectionConnections, object.InputBegan:Connect(function(input)
+        table.insert(selectionConnections, bind(object.InputBegan, function(input)
             if not selectingPunch or not scriptAlive then return end
             if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
             if buttonVisibilityIssue(object) then return end
@@ -785,7 +813,7 @@ bindPunchButton.Activated:Connect(function()
         end))
     end
     for _, object in ipairs(player.PlayerGui:GetDescendants()) do observe(object) end
-    table.insert(selectionConnections, player.PlayerGui.DescendantAdded:Connect(observe))
+    table.insert(selectionConnections, bind(player.PlayerGui.DescendantAdded, observe))
     setPanelShown(false)
     task.delay(20, function()
         if selectingPunch and generation == selectionGeneration and scriptAlive then
@@ -836,16 +864,22 @@ local function findBlockButton()
 end
 
 local function sendMouseClick(point)
-    return pcall(function()
+    local pressed, pressError = pcall(function()
         if virtualInput then
             virtualInput:SendMouseButton(point, Enum.UserInputType.MouseButton1, true, 0)
-            virtualInput:SendMouseButton(point, Enum.UserInputType.MouseButton1, false, 0)
         else
             VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
+        end
+    end)
+    local released, releaseError = pcall(function()
+        if virtualInput then
+            virtualInput:SendMouseButton(point, Enum.UserInputType.MouseButton1, false, 0)
+        else
             VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0)
         end
-        return true
     end)
+    if not pressed or not released then return false, tostring(not pressed and pressError or releaseError) end
+    return true, true
 end
 
 local function activateGuiButton(button)
@@ -869,7 +903,6 @@ local function activateGuiButton(button)
 end
 
 local function sendSelectedTouch()
-    if touchFailure then return false, touchFailure end
     if touchBusy then return false, "Touch already in progress" end
     if not selectedTouchOffset then return false, "Select using a real screen tap first" end
     if panel.Visible then return false, "Hide Nexus with X before touch attacks" end
@@ -893,7 +926,7 @@ local function sendSelectedTouch()
     return true
 end
 
-testTouchButton.Activated:Connect(function()
+bind(testTouchButton.Activated, function()
     if touchTesting then return end
     if isAutoOn then
         attackStatus.Text = "Turn Auto punch OFF before the single-touch test"
@@ -965,14 +998,19 @@ end
 local spaceHeld = UserInputService:IsKeyDown(Enum.KeyCode.Space)
 local injectingSpace = false
 local blockCycleBusy = false
-UserInputService.InputBegan:Connect(function(input)
+local syntheticSpaceDown = false
+local releaseSpace
+bind(UserInputService.InputBegan, function(input)
     if scriptAlive and not injectingSpace and input.KeyCode == Enum.KeyCode.Space then spaceHeld = true end
 end)
-UserInputService.InputEnded:Connect(function(input)
-    if scriptAlive and not injectingSpace and input.KeyCode == Enum.KeyCode.Space then spaceHeld = false end
+bind(UserInputService.InputEnded, function(input)
+    if scriptAlive and not injectingSpace and input.KeyCode == Enum.KeyCode.Space then
+        spaceHeld = false
+        if releaseSpace then releaseSpace() end
+    end
 end)
-UserInputService.WindowFocusReleased:Connect(function() spaceHeld = false end)
-player.CharacterRemoving:Connect(function() spaceHeld = false end)
+bind(UserInputService.WindowFocusReleased, function() spaceHeld = false; if releaseSpace then releaseSpace() end end)
+bind(player.CharacterRemoving, function() spaceHeld = false; if releaseSpace then releaseSpace() end end)
 local function sendSpace(down)
     injectingSpace = true
     local ok, err = pcall(function()
@@ -980,9 +1018,25 @@ local function sendSpace(down)
         else VirtualInputManager:SendKeyEvent(down, Enum.KeyCode.Space, false, game) end
     end)
     injectingSpace = false
+    if ok then syntheticSpaceDown = down end
     return ok, err
 end
-local function performMultiPunch()
+releaseSpace = function()
+    if syntheticSpaceDown then
+        syntheticSpaceDown = false
+        local ok = sendSpace(false)
+        if not ok then syntheticSpaceDown = true end
+    end
+end
+table.insert(cleanupCallbacks, releaseSpace)
+bind(testBlockButton.Activated, function() if not getTestBlock() then releaseSpace() end end)
+local autoGeneration = 0
+local function performMultiPunch(generation)
+    local burstCharacter = player.Character
+    local function cancelled()
+        return not scriptAlive or not isAutoOn or generation ~= autoGeneration
+            or player.Character ~= burstCharacter or panel.Visible
+    end
     if getTestBlock() and desktopInput and spaceHeld then
         if blockCycleBusy then return false, "Block test busy" end
         blockCycleBusy = true
@@ -991,7 +1045,7 @@ local function performMultiPunch()
             local released, err = sendSpace(false)
             if not released then return false, tostring(err) end
             if blockPause > 0 then task.wait(blockPause / 1000) else RunService.Heartbeat:Wait() end
-            if not scriptAlive or not isAutoOn or panel.Visible or player.Character ~= character then
+            if cancelled() or not getTestBlock() then
                 return false, "Block test cancelled"
             end
             local hit, message = punch()
@@ -999,7 +1053,7 @@ local function performMultiPunch()
             return hit, message
         end)
         -- Restore only if the tracked physical hold and original character remain.
-        local restored, restoreError = sendSpace(scriptAlive and spaceHeld and player.Character == character)
+        local restored, restoreError = sendSpace(not cancelled() and getTestBlock() and spaceHeld and player.Character == character)
         blockCycleBusy = false
         if not restored then return false, "Space restore failed: " .. tostring(restoreError) end
         if not ok then return false, tostring(sent) end
@@ -1008,7 +1062,7 @@ local function performMultiPunch()
 
     -- Меню уже закрывается пользователем один раз; не меняем его Visible в боевом цикле.
     for _ = 1, MULTI_PUNCH do
-        if not scriptAlive then return false, "Script stopped" end
+        if cancelled() then return false, "Attack cancelled" end
         local sent, reason = punch()
         if not sent then return false, reason end
     end
@@ -1054,7 +1108,6 @@ local function getNearestEnemy()
     return nearest
 end
 
-local autoGeneration = 0
 local function autoPunchLoop(generation)
     while scriptAlive and isAutoOn and generation == autoGeneration do
         if selectingPunch or touchTesting then RunService.Heartbeat:Wait(); continue end
@@ -1073,7 +1126,7 @@ local function autoPunchLoop(generation)
                 and (not SKIP_BLOCKING_TARGETS or not enemyBlocking)
             local seriesInterval = math.max(PUNCH_DELAY, MIN_SERIES_INTERVAL)
             if canPunch and now - lastPunchTime >= seriesInterval then
-                local ok, sent, reason = pcall(performMultiPunch)
+                local ok, sent, reason = pcall(performMultiPunch, generation)
                 if not ok or not sent then
                     local detail = not ok and tostring(sent) or tostring(reason or "Unknown attack input error")
                     attackStatus.Text = "PAUSED: " .. detail
@@ -1101,17 +1154,19 @@ local function autoPunchLoop(generation)
 end
 
 local lastAutoTap = -math.huge
-toggleAuto.Activated:Connect(function()
+bind(toggleAuto.Activated, function()
     -- Ignore duplicate activation events from one rapid touch.
     local now = os.clock()
     if now - lastAutoTap < 0.3 then return end
     lastAutoTap = now
     autoGeneration = autoGeneration + 1
     isAutoOn = not isAutoOn
+    if not isAutoOn then releaseSpace() end
     setAutoToggle(isAutoOn)
     attackStatus.Text = isAutoOn and "Checking attack input..." or "Auto punch: OFF"
     attackStatus.TextColor3 = COLORS.muted
     if isAutoOn then
+        touchFailure = nil
         lastPunchTime = 0
         local generation = autoGeneration
         task.spawn(function()
@@ -1130,18 +1185,18 @@ local function setDelay(value)
     if number then PUNCH_DELAY = math.clamp(math.floor(number), 0, 10000) end
     delayBox.Text = tostring(PUNCH_DELAY)
 end
-delayMinus.Activated:Connect(function() setDelay(PUNCH_DELAY - 50) end)
-delayPlus.Activated:Connect(function() setDelay(PUNCH_DELAY + 50) end)
-delayBox.FocusLost:Connect(function() setDelay(delayBox.Text) end)
+bind(delayMinus.Activated, function() setDelay(PUNCH_DELAY - 50) end)
+bind(delayPlus.Activated, function() setDelay(PUNCH_DELAY + 50) end)
+bind(delayBox.FocusLost, function() setDelay(delayBox.Text) end)
 
 local function setMulti(value)
     local number = tonumber(value)
     if number then MULTI_PUNCH = math.clamp(math.floor(number), 1, 10) end
     multiBox.Text = tostring(MULTI_PUNCH)
 end
-multiMinus.Activated:Connect(function() setMulti(MULTI_PUNCH - 1) end)
-multiPlus.Activated:Connect(function() setMulti(MULTI_PUNCH + 1) end)
-multiBox.FocusLost:Connect(function() setMulti(multiBox.Text) end)
+bind(multiMinus.Activated, function() setMulti(MULTI_PUNCH - 1) end)
+bind(multiPlus.Activated, function() setMulti(MULTI_PUNCH + 1) end)
+bind(multiBox.FocusLost, function() setMulti(multiBox.Text) end)
 
 local function setAuraRange(value)
     local number = tonumber(value)
@@ -1150,15 +1205,15 @@ local function setAuraRange(value)
     end
     rangeBox.Text = tostring(AURA_RANGE)
 end
-rangeMinus.Activated:Connect(function() setAuraRange(AURA_RANGE - 1) end)
-rangePlus.Activated:Connect(function() setAuraRange(AURA_RANGE + 1) end)
-rangeBox.FocusLost:Connect(function() setAuraRange(rangeBox.Text) end)
-targetBlockToggle.Activated:Connect(function()
+bind(rangeMinus.Activated, function() setAuraRange(AURA_RANGE - 1) end)
+bind(rangePlus.Activated, function() setAuraRange(AURA_RANGE + 1) end)
+bind(rangeBox.FocusLost, function() setAuraRange(rangeBox.Text) end)
+bind(targetBlockToggle.Activated, function()
     SKIP_BLOCKING_TARGETS = not getTargetBlockToggle()
     setTargetBlockToggle(SKIP_BLOCKING_TARGETS)
 end)
 
-blockToggle.Activated:Connect(function()
+bind(blockToggle.Activated, function()
     PUNCH_WHILE_BLOCKING = not getBlockToggle()
     setBlockToggle(PUNCH_WHILE_BLOCKING)
 end)
@@ -1185,8 +1240,9 @@ end
 createESPForPlayer = function(plr)
     if plr == player then return end
     local char = plr.Character
-    if not char then return end
-    if not ESP_ENABLED then return end
+    if not scriptAlive or not char or not ESP_ENABLED then return end
+    if highlightObjects[plr] then highlightObjects[plr]:Destroy(); highlightObjects[plr] = nil end
+    if nameTags[plr] then nameTags[plr]:Destroy(); nameTags[plr] = nil end
 
     -- Highlight
     local hl = Instance.new("Highlight")
@@ -1229,9 +1285,15 @@ local function removeESPForPlayer(plr)
     if nameTags[plr] then nameTags[plr]:Destroy(); nameTags[plr] = nil end
 end
 
+table.insert(cleanupCallbacks, function()
+    for _, hl in pairs(highlightObjects) do hl:Destroy() end
+    for _, tag in pairs(nameTags) do tag:Destroy() end
+    table.clear(highlightObjects)
+    table.clear(nameTags)
+end)
 -- Обработчики для ESP
-Players.PlayerAdded:Connect(function(plr)
-    plr.CharacterAdded:Connect(function()
+bind(Players.PlayerAdded, function(plr)
+    bind(plr.CharacterAdded, function()
         task.wait(0.2)
         createESPForPlayer(plr)
     end)
@@ -1241,11 +1303,11 @@ Players.PlayerAdded:Connect(function(plr)
     end
 end)
 
-Players.PlayerRemoving:Connect(function(plr)
+bind(Players.PlayerRemoving, function(plr)
     removeESPForPlayer(plr)
 end)
 
-espToggle.Activated:Connect(function()
+bind(espToggle.Activated, function()
     ESP_ENABLED = not getEspToggle()
     setEspToggle(ESP_ENABLED)
     if ESP_ENABLED then refreshESP() else
@@ -1256,23 +1318,23 @@ espToggle.Activated:Connect(function()
     end
 end)
 
-nameToggle.Activated:Connect(function()
+bind(nameToggle.Activated, function()
     SHOW_NAMES = not getNameToggle()
     setNameToggle(SHOW_NAMES)
     refreshESP()
 end)
 
-alphaMinus.Activated:Connect(function()
+bind(alphaMinus.Activated, function()
     ESP_ALPHA = math.max(0, math.floor((ESP_ALPHA - 0.05) * 100) / 100)
     alphaBox.Text = string.format("%.2f", ESP_ALPHA)
     for plr, hl in pairs(highlightObjects) do hl.FillTransparency = ESP_ALPHA end
 end)
-alphaPlus.Activated:Connect(function()
+bind(alphaPlus.Activated, function()
     ESP_ALPHA = math.min(1, math.floor((ESP_ALPHA + 0.05) * 100) / 100)
     alphaBox.Text = string.format("%.2f", ESP_ALPHA)
     for plr, hl in pairs(highlightObjects) do hl.FillTransparency = ESP_ALPHA end
 end)
-alphaBox.FocusLost:Connect(function()
+bind(alphaBox.FocusLost, function()
     local val = tonumber(alphaBox.Text)
     if val then ESP_ALPHA = math.clamp(val, 0, 1) end
     alphaBox.Text = string.format("%.2f", ESP_ALPHA)
@@ -1282,6 +1344,7 @@ end)
 -- Инициализация ESP для существующих игроков
 for _, plr in ipairs(Players:GetPlayers()) do
     if plr ~= player then
+        bind(plr.CharacterAdded, function() task.wait(0.2); createESPForPlayer(plr) end)
         task.wait(0.1)
         createESPForPlayer(plr)
     end
