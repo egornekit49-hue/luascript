@@ -1,5 +1,5 @@
 -- Nexus UI v2: Speed, Fly, Auto-Punch (Multi), ESP with Color Picker
--- v3.7 movement recovery: lifecycle cleanup and no synthetic block key.
+-- v3.7 movement isolation: never mutate character movement during spawn/ring transitions.
 
 local scriptAlive = true
 local connections, cleanupCallbacks = {}, {}
@@ -30,28 +30,23 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local player = Players.LocalPlayer
 local desktopInput = UserInputService.KeyboardEnabled and UserInputService.MouseEnabled
 local virtualInput
-if desktopInput then
+local function getVirtualInput()
+    if virtualInput then return virtualInput end
     pcall(function() virtualInput = UserInputService:CreateVirtualInput() end)
+    return virtualInput
 end
 
-local function releaseLegacySpace()
+-- Получаем актуальный Controls только по явному запросу. Некоторые режимы
+-- пересоздают контроллер при входе на ринг, поэтому хранить его со старта нельзя.
+local function getCurrentControls()
+    local controls
     pcall(function()
-        if virtualInput then
-            virtualInput:SendKey(false, Enum.KeyCode.Space, false)
-        else
-            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
-        end
+        local scripts = player:FindFirstChild("PlayerScripts")
+        local module = scripts and scripts:FindFirstChild("PlayerModule")
+        if module then controls = require(module):GetControls() end
     end)
+    return controls
 end
-releaseLegacySpace()
-table.insert(cleanupCallbacks, releaseLegacySpace)
-
--- Мобильный джойстик Roblox (не затрагивает управление камерой)
-local mobileControls
-pcall(function()
-    local playerModule = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
-    mobileControls = playerModule:GetControls()
-end)
 
 -- Настройки по умолчанию
 local SPEED = 50
@@ -203,7 +198,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "v3.7 movement recovery", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "v3.7 movement isolation", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -576,17 +571,19 @@ local function getHumanoid()
     return character and character:FindFirstChildOfClass("Humanoid")
 end
 
-local function setSpeed(value)
+local function setSpeed(value, applyNow)
     local number = tonumber(value)
     if number then SPEED = math.clamp(math.floor(number), 0, 500) end
     valueBox.Text = tostring(SPEED)
-    local humanoid = getHumanoid()
-    if humanoid then humanoid.WalkSpeed = SPEED end
+    if applyNow then
+        local humanoid = getHumanoid()
+        if humanoid then humanoid.WalkSpeed = SPEED end
+    end
 end
 
-bind(decrease.Activated, function() setSpeed(SPEED - STEP) end)
-bind(increase.Activated, function() setSpeed(SPEED + STEP) end)
-bind(valueBox.FocusLost, function() setSpeed(valueBox.Text) end)
+bind(decrease.Activated, function() setSpeed(SPEED - STEP, true) end)
+bind(increase.Activated, function() setSpeed(SPEED + STEP, true) end)
+bind(valueBox.FocusLost, function() setSpeed(valueBox.Text, true) end)
 
 local movementStatusCard = makeCard(movementPage, "Movement state", "Read-only diagnostics after respawn / ring entry", 94)
 local movementStatus = create("TextLabel", {
@@ -618,20 +615,46 @@ stroke(restoreMoveButton, COLORS.border, 0.25)
 -- ---- Flight (BodyVelocity) ----
 local flying = false
 local flyBodyVelocity, flyBodyGyro, flyConnection
-local flightHumanoid, previousPlatformStand
-local flightSetPlatformStand = false
+local flightHumanoid
+
+local function removeNexusMovers(character)
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not root then return false end
+    local removed = false
+    for _, child in ipairs(root:GetChildren()) do
+        if child.Name == "NexusFlyVelocity" or child.Name == "NexusFlyGyro" then
+            child:Destroy()
+            removed = true
+        end
+    end
+    return removed
+end
 
 local function stopFly()
+    local wasFlying = flying
     flying = false
     if flyConnection then flyConnection:Disconnect(); flyConnection = nil end
     if flyBodyVelocity then flyBodyVelocity:Destroy(); flyBodyVelocity = nil end
     if flyBodyGyro then flyBodyGyro:Destroy(); flyBodyGyro = nil end
-    -- Restore physics before touching UI.
-    -- Включаем гравитацию обратно
-    if flightHumanoid and flightHumanoid.Parent and flightSetPlatformStand then
-        flightHumanoid.PlatformStand = previousPlatformStand
+    local character = player.Character
+    local removedMover = removeNexusMovers(character)
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local shouldRestore = wasFlying or removedMover or humanoid == flightHumanoid
+    if shouldRestore and humanoid and humanoid.Health > 0 then
+        -- Старые версии Fly могли оставить PlatformStand включённым, поэтому
+        -- при явном выключении выводим Humanoid из физического состояния полёта.
+        humanoid.PlatformStand = false
+        humanoid.Sit = false
+        humanoid.AutoRotate = true
+        humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+        task.defer(function()
+            if scriptAlive and player.Character == character and humanoid.Parent and humanoid.Health > 0 then
+                humanoid:ChangeState(Enum.HumanoidStateType.Running)
+                local controls = getCurrentControls()
+                if controls then pcall(function() controls:Enable() end) end
+            end
+        end)
     end
-    flightSetPlatformStand = false
     flightHumanoid = nil
     if scriptAlive then setFlyToggle(false) end
 end
@@ -646,11 +669,10 @@ local function startFly()
     local hum = character:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
+    removeNexusMovers(character)
     flightHumanoid = hum
-    previousPlatformStand = hum.PlatformStand
-    -- BodyVelocity удерживает высоту; на телефоне сохраняем обычный ввод Humanoid.
-    flightSetPlatformStand = not UserInputService.TouchEnabled and not hum.PlatformStand
-    if flightSetPlatformStand then hum.PlatformStand = true end
+    -- Не переводим Humanoid в PlatformStand: именно это состояние оставляло
+    -- персонажа без обычной ходьбы после выключения Fly.
 
     flyBodyVelocity = Instance.new("BodyVelocity")
     flyBodyVelocity.Name = "NexusFlyVelocity"
@@ -687,8 +709,9 @@ local function startFly()
             -- PlayerModule используется как запасной вариант.
             local stick = hum.MoveDirection
             local stickIsWorldSpace = stick.Magnitude > 0
-            if not stickIsWorldSpace and mobileControls then
-                stick = mobileControls:GetMoveVector()
+            local controls = getCurrentControls()
+            if not stickIsWorldSpace and controls then
+                stick = controls:GetMoveVector()
             end
             local flatLook = Vector3.new(camera.CFrame.LookVector.X, 0, camera.CFrame.LookVector.Z)
             local flatRight = Vector3.new(camera.CFrame.RightVector.X, 0, camera.CFrame.RightVector.Z)
@@ -717,28 +740,23 @@ bind(flyButton.Activated, function()
 end)
 
 bind(player.CharacterRemoving, function()
-    releaseLegacySpace()
     stopFly()
     stopNoclip()
 end)
 
 bind(player.CharacterAdded, function(character)
-    stopFly()
+    -- Do not write WalkSpeed, PlatformStand or control state here. Boxing Beta
+    -- owns those values while it moves a player into/out of the ring.
     stopNoclip()
-    releaseLegacySpace()
-    local hum = character:WaitForChild("Humanoid")
-    if scriptAlive and player.Character == character then hum.WalkSpeed = SPEED end
-    task.delay(0.35, function()
-        if not scriptAlive or player.Character ~= character then return end
-        pcall(function() if mobileControls then mobileControls:Enable() end end)
-    end)
+    removeNexusMovers(character)
+    if scriptAlive then setFlyToggle(false) end
 end)
 
 bind(restoreMoveButton.Activated, function()
     stopFly()
     stopNoclip()
-    releaseLegacySpace()
-    pcall(function() if mobileControls then mobileControls:Enable() end end)
+    local controls = getCurrentControls()
+    if controls then pcall(function() controls:Enable() end) end
     local character = player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -754,40 +772,6 @@ bind(restoreMoveButton.Activated, function()
         humanoid.AutoRotate = true
         humanoid.WalkSpeed = SPEED
         humanoid:ChangeState(Enum.HumanoidStateType.Running)
-    end
-end)
-
--- If Roblox controls were left disabled after a respawn/ring transition,
--- recover only after the user has held a movement key for one second.
-task.spawn(function()
-    local stalledSince
-    while scriptAlive do
-        local character = player.Character
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-        local root = character and character:FindFirstChild("HumanoidRootPart")
-        local wantsMove = desktopInput and not UserInputService:IsKeyDown(Enum.KeyCode.Space) and (
-            UserInputService:IsKeyDown(Enum.KeyCode.W)
-            or UserInputService:IsKeyDown(Enum.KeyCode.A)
-            or UserInputService:IsKeyDown(Enum.KeyCode.S)
-            or UserInputService:IsKeyDown(Enum.KeyCode.D)
-        )
-        local stalled = wantsMove and not flying and humanoid and humanoid.Health > 0
-            and root and not root.Anchored and humanoid.MoveDirection.Magnitude < 0.01
-        if stalled then
-            stalledSince = stalledSince or time()
-            if time() - stalledSince >= 1 then
-                pcall(function() if mobileControls then mobileControls:Enable() end end)
-                if humanoid.PlatformStand then humanoid.PlatformStand = false end
-                if humanoid.Sit then humanoid.Sit = false end
-                if humanoid.WalkSpeed <= 0 then humanoid.WalkSpeed = SPEED end
-                humanoid.AutoRotate = true
-                humanoid:ChangeState(Enum.HumanoidStateType.Running)
-                stalledSince = time()
-            end
-        else
-            stalledSince = nil
-        end
-        task.wait(0.1)
     end
 end)
 
@@ -923,15 +907,17 @@ end
 
 local function sendMouseClick(point)
     local pressed, pressError = pcall(function()
-        if virtualInput then
-            virtualInput:SendMouseButton(point, Enum.UserInputType.MouseButton1, true, 0)
+        local inputSender = getVirtualInput()
+        if inputSender then
+            inputSender:SendMouseButton(point, Enum.UserInputType.MouseButton1, true, 0)
         else
             VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
         end
     end)
     local released, releaseError = pcall(function()
-        if virtualInput then
-            virtualInput:SendMouseButton(point, Enum.UserInputType.MouseButton1, false, 0)
+        local inputSender = getVirtualInput()
+        if inputSender then
+            inputSender:SendMouseButton(point, Enum.UserInputType.MouseButton1, false, 0)
         else
             VirtualInputManager:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0)
         end
@@ -1349,7 +1335,7 @@ for _, plr in ipairs(Players:GetPlayers()) do
 end
 
 -- ---- Инициализация ----
-setSpeed(SPEED)
+setSpeed(SPEED, false)
 setBlockToggle(PUNCH_WHILE_BLOCKING)
 setTargetBlockToggle(SKIP_BLOCKING_TARGETS)
 setEspToggle(ESP_ENABLED)
@@ -1361,4 +1347,4 @@ panel.BackgroundTransparency = 1
 tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus v3.7] Movement recovery loaded")
+print("[Nexus v3.7] Movement isolation loaded")
