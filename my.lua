@@ -1,5 +1,5 @@
 -- Nexus UI v2: Speed, Fly, Auto-Punch (Multi), ESP with Color Picker
--- v3.7 audit fixes: lifecycle cleanup, cancellable attacks, input release.
+-- v3.7 movement recovery: lifecycle cleanup and no synthetic block key.
 
 local scriptAlive = true
 local connections, cleanupCallbacks = {}, {}
@@ -33,6 +33,18 @@ local virtualInput
 if desktopInput then
     pcall(function() virtualInput = UserInputService:CreateVirtualInput() end)
 end
+
+local function releaseLegacySpace()
+    pcall(function()
+        if virtualInput then
+            virtualInput:SendKey(false, Enum.KeyCode.Space, false)
+        else
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+        end
+    end)
+end
+releaseLegacySpace()
+table.insert(cleanupCallbacks, releaseLegacySpace)
 
 -- Мобильный джойстик Roblox (не затрагивает управление камерой)
 local mobileControls
@@ -191,7 +203,7 @@ local dot = create("Frame", {
 corner(dot, 5)
 create("TextLabel", {
     Position = UDim2.fromOffset(29, 46), Size = UDim2.new(1, -38, 0, 20),
-    BackgroundTransparency = 1, Text = "v3.7 audit fix", TextColor3 = COLORS.muted,
+    BackgroundTransparency = 1, Text = "v3.7 movement recovery", TextColor3 = COLORS.muted,
     Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, sidebar)
 
@@ -436,23 +448,6 @@ local multiMinus, multiBox, multiPlus = makeStepper(multiCard, tostring(MULTI_PU
 
 local blockCard = makeCard(combatPage, "Punch while blocking", "Allow punching even when you are blocking")
 local blockToggle, setBlockToggle, getBlockToggle = makeToggle(blockCard)
-local testBlockCard = makeCard(combatPage, "Space block test (PC)", "EXPERIMENT: release, hit, restore; protection briefly drops", 94)
-local testBlockButton, setTestBlock, getTestBlock = makeToggle(testBlockCard)
-local blockPauseCard = makeCard(combatPage, "Block test pause (ms)", "Pause before and after each single test hit", 94)
-local blockMinus, blockBox, blockPlus = makeStepper(blockPauseCard, "50")
-local blockPause = 50
-local function setBlockPause(value)
-    local n = tonumber(value)
-    if n and n == n and math.abs(n) < math.huge then blockPause = math.clamp(math.floor(n), 0, 500) end
-    blockBox.Text = tostring(blockPause)
-end
-bind(blockMinus.Activated, function() setBlockPause(blockPause - 10) end)
-bind(blockPlus.Activated, function() setBlockPause(blockPause + 10) end)
-bind(blockBox.FocusLost, function() setBlockPause(blockBox.Text) end)
-bind(testBlockButton.Activated, function()
-    setTestBlock(desktopInput and not getTestBlock())
-    if getTestBlock() then PUNCH_WHILE_BLOCKING = true; setBlockToggle(true) end
-end)
 
 local rangeCard = makeCard(combatPage, "Aura range (studs)", "Auto punch activation distance", 94)
 local rangeMinus, rangeBox, rangePlus = makeStepper(rangeCard, tostring(AURA_RANGE))
@@ -593,7 +588,6 @@ bind(decrease.Activated, function() setSpeed(SPEED - STEP) end)
 bind(increase.Activated, function() setSpeed(SPEED + STEP) end)
 bind(valueBox.FocusLost, function() setSpeed(valueBox.Text) end)
 
-local speedConnection
 local movementStatusCard = makeCard(movementPage, "Movement state", "Read-only diagnostics after respawn / ring entry", 94)
 local movementStatus = create("TextLabel", {
     Position = UDim2.fromOffset(15, 56), Size = UDim2.new(1, -30, 0, 28),
@@ -610,17 +604,16 @@ task.spawn(function()
         task.wait(0.5)
     end
 end)
-speedConnection = bind(RunService.Heartbeat, function()
-    if not scriptAlive then speedConnection:Disconnect(); return end
-    local humanoid = getHumanoid()
-    if humanoid and humanoid.Health > 0 and humanoid.WalkSpeed > 0
-        and not humanoid.PlatformStand and not humanoid.Sit then
-        local root = humanoid.Parent:FindFirstChild("HumanoidRootPart")
-        if root and not root.Anchored and humanoid.WalkSpeed ~= SPEED then
-            humanoid.WalkSpeed = SPEED
-        end
-    end
-end)
+
+local restoreMoveCard = makeCard(movementPage, "Restore movement", "Stops Nexus movers and re-enables Roblox controls", 94)
+local restoreMoveButton = create("TextButton", {
+    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 7),
+    Size = UDim2.fromOffset(128, 34), BackgroundColor3 = COLORS.window,
+    BorderSizePixel = 0, Text = "RESTORE", TextColor3 = COLORS.accent,
+    Font = Enum.Font.GothamBold, TextSize = 11, AutoButtonColor = false,
+}, restoreMoveCard)
+corner(restoreMoveButton, 8)
+stroke(restoreMoveButton, COLORS.border, 0.25)
 
 -- ---- Flight (BodyVelocity) ----
 local flying = false
@@ -660,10 +653,12 @@ local function startFly()
     if flightSetPlatformStand then hum.PlatformStand = true end
 
     flyBodyVelocity = Instance.new("BodyVelocity")
+    flyBodyVelocity.Name = "NexusFlyVelocity"
     flyBodyVelocity.MaxForce = Vector3.new(1e6, 1e6, 1e6)
     flyBodyVelocity.Parent = root
 
     flyBodyGyro = Instance.new("BodyGyro")
+    flyBodyGyro.Name = "NexusFlyGyro"
     flyBodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
     flyBodyGyro.Parent = root
 
@@ -722,6 +717,7 @@ bind(flyButton.Activated, function()
 end)
 
 bind(player.CharacterRemoving, function()
+    releaseLegacySpace()
     stopFly()
     stopNoclip()
 end)
@@ -729,8 +725,70 @@ end)
 bind(player.CharacterAdded, function(character)
     stopFly()
     stopNoclip()
+    releaseLegacySpace()
     local hum = character:WaitForChild("Humanoid")
     if scriptAlive and player.Character == character then hum.WalkSpeed = SPEED end
+    task.delay(0.35, function()
+        if not scriptAlive or player.Character ~= character then return end
+        pcall(function() if mobileControls then mobileControls:Enable() end end)
+    end)
+end)
+
+bind(restoreMoveButton.Activated, function()
+    stopFly()
+    stopNoclip()
+    releaseLegacySpace()
+    pcall(function() if mobileControls then mobileControls:Enable() end end)
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if root then
+        for _, name in ipairs({"NexusFlyVelocity", "NexusFlyGyro"}) do
+            local mover = root:FindFirstChild(name)
+            if mover then mover:Destroy() end
+        end
+    end
+    if humanoid and humanoid.Health > 0 then
+        humanoid.PlatformStand = false
+        humanoid.Sit = false
+        humanoid.AutoRotate = true
+        humanoid.WalkSpeed = SPEED
+        humanoid:ChangeState(Enum.HumanoidStateType.Running)
+    end
+end)
+
+-- If Roblox controls were left disabled after a respawn/ring transition,
+-- recover only after the user has held a movement key for one second.
+task.spawn(function()
+    local stalledSince
+    while scriptAlive do
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local wantsMove = desktopInput and not UserInputService:IsKeyDown(Enum.KeyCode.Space) and (
+            UserInputService:IsKeyDown(Enum.KeyCode.W)
+            or UserInputService:IsKeyDown(Enum.KeyCode.A)
+            or UserInputService:IsKeyDown(Enum.KeyCode.S)
+            or UserInputService:IsKeyDown(Enum.KeyCode.D)
+        )
+        local stalled = wantsMove and not flying and humanoid and humanoid.Health > 0
+            and root and not root.Anchored and humanoid.MoveDirection.Magnitude < 0.01
+        if stalled then
+            stalledSince = stalledSince or time()
+            if time() - stalledSince >= 1 then
+                pcall(function() if mobileControls then mobileControls:Enable() end end)
+                if humanoid.PlatformStand then humanoid.PlatformStand = false end
+                if humanoid.Sit then humanoid.Sit = false end
+                if humanoid.WalkSpeed <= 0 then humanoid.WalkSpeed = SPEED end
+                humanoid.AutoRotate = true
+                humanoid:ChangeState(Enum.HumanoidStateType.Running)
+                stalledSince = time()
+            end
+        else
+            stalledSince = nil
+        end
+        task.wait(0.1)
+    end
 end)
 
 -- ---- Логика Combat (Auto-Punch with Multi) ----
@@ -994,42 +1052,6 @@ local function punch()
     return false, "No equipped Tool or named attack button. Equip fists first."
 end
 
--- Physical and synthetic input share UIS: this tracker is experimental.
-local spaceHeld = UserInputService:IsKeyDown(Enum.KeyCode.Space)
-local injectingSpace = false
-local blockCycleBusy = false
-local syntheticSpaceDown = false
-local releaseSpace
-bind(UserInputService.InputBegan, function(input)
-    if scriptAlive and not injectingSpace and input.KeyCode == Enum.KeyCode.Space then spaceHeld = true end
-end)
-bind(UserInputService.InputEnded, function(input)
-    if scriptAlive and not injectingSpace and input.KeyCode == Enum.KeyCode.Space then
-        spaceHeld = false
-        if releaseSpace then releaseSpace() end
-    end
-end)
-bind(UserInputService.WindowFocusReleased, function() spaceHeld = false; if releaseSpace then releaseSpace() end end)
-bind(player.CharacterRemoving, function() spaceHeld = false; if releaseSpace then releaseSpace() end end)
-local function sendSpace(down)
-    injectingSpace = true
-    local ok, err = pcall(function()
-        if virtualInput then virtualInput:SendKey(down, Enum.KeyCode.Space, false)
-        else VirtualInputManager:SendKeyEvent(down, Enum.KeyCode.Space, false, game) end
-    end)
-    injectingSpace = false
-    if ok then syntheticSpaceDown = down end
-    return ok, err
-end
-releaseSpace = function()
-    if syntheticSpaceDown then
-        syntheticSpaceDown = false
-        local ok = sendSpace(false)
-        if not ok then syntheticSpaceDown = true end
-    end
-end
-table.insert(cleanupCallbacks, releaseSpace)
-bind(testBlockButton.Activated, function() if not getTestBlock() then releaseSpace() end end)
 local autoGeneration = 0
 local function performMultiPunch(generation)
     local burstCharacter = player.Character
@@ -1037,29 +1059,6 @@ local function performMultiPunch(generation)
         return not scriptAlive or not isAutoOn or generation ~= autoGeneration
             or player.Character ~= burstCharacter or panel.Visible
     end
-    if getTestBlock() and desktopInput and spaceHeld then
-        if blockCycleBusy then return false, "Block test busy" end
-        blockCycleBusy = true
-        local character = player.Character
-        local ok, sent, reason = pcall(function()
-            local released, err = sendSpace(false)
-            if not released then return false, tostring(err) end
-            if blockPause > 0 then task.wait(blockPause / 1000) else RunService.Heartbeat:Wait() end
-            if cancelled() or not getTestBlock() then
-                return false, "Block test cancelled"
-            end
-            local hit, message = punch()
-            if blockPause > 0 then task.wait(blockPause / 1000) else RunService.Heartbeat:Wait() end
-            return hit, message
-        end)
-        -- Restore only if the tracked physical hold and original character remain.
-        local restored, restoreError = sendSpace(not cancelled() and getTestBlock() and spaceHeld and player.Character == character)
-        blockCycleBusy = false
-        if not restored then return false, "Space restore failed: " .. tostring(restoreError) end
-        if not ok then return false, tostring(sent) end
-        return sent, reason
-    end
-
     -- Меню уже закрывается пользователем один раз; не меняем его Visible в боевом цикле.
     for _ = 1, MULTI_PUNCH do
         if cancelled() then return false, "Attack cancelled" end
@@ -1161,7 +1160,6 @@ bind(toggleAuto.Activated, function()
     lastAutoTap = now
     autoGeneration = autoGeneration + 1
     isAutoOn = not isAutoOn
-    if not isAutoOn then releaseSpace() end
     setAutoToggle(isAutoOn)
     attackStatus.Text = isAutoOn and "Checking attack input..." or "Auto punch: OFF"
     attackStatus.TextColor3 = COLORS.muted
@@ -1363,4 +1361,4 @@ panel.BackgroundTransparency = 1
 tween(panel, {Size = UDim2.fromOffset(600, 420), BackgroundTransparency = 0}, 0.35)
 if UserInputService.TouchEnabled then tween(dim, {BackgroundTransparency = 0.65}, 0.3) end
 
-print("[Nexus v3.7] Mobile + PC interface loaded")
+print("[Nexus v3.7] Movement recovery loaded")
