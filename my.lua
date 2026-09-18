@@ -1,5 +1,6 @@
 -- Nexus Airbreak: client-side runtime movement; no game files are edited.
 -- N toggles the panel, E/Q move vertically on PC. Touch has separate up/down buttons.
+-- v2: HP protection while flying/airbreak (no fall damage, no anti-cheat drain).
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -31,6 +32,11 @@ local panel, dim, mini, toggle, toggleKnob, flyToggle, flyToggleKnob, stateLabel
 local upHeld, downHeld = false, false
 local upButton, downButton
 local mobileControls
+
+-- ★ Защита HP
+local healthConnection = nil
+local healthProtectionActive = false
+local savedFallDamage = nil
 
 local function connect(signal, callback)
     local connection = signal:Connect(callback)
@@ -76,6 +82,57 @@ local function rememberPart(part)
     end
 end
 
+-- ★ Включаем защиту HP
+local function enableHealthProtection()
+    local current = player.Character
+    if not current then return end
+    local hum = current:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+
+    healthProtectionActive = true
+
+    -- Отключаем состояния падения/рэгдолла, чтобы не получать урон от падения
+    pcall(function()
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.PlatformStanding, false)
+    end)
+
+    -- Подстраховка: если HP всё же упало — восстанавливаем
+    if healthConnection then healthConnection:Disconnect() end
+    healthConnection = hum.HealthChanged:Connect(function(newHealth)
+        if healthProtectionActive and newHealth < hum.MaxHealth and newHealth > 0 then
+            hum.Health = hum.MaxHealth
+        end
+    end)
+end
+
+-- ★ Выключаем защиту HP
+local function disableHealthProtection()
+    healthProtectionActive = false
+    if healthConnection then
+        healthConnection:Disconnect()
+        healthConnection = nil
+    end
+end
+
+-- ★ Каждый кадр восстанавливаем HP и ставим состояние "Running"
+-- (сервер думает, что ты просто бежишь по земле)
+local function maintainHealth(hum)
+    if not hum or hum.Health <= 0 then return end
+    if hum.Health < hum.MaxHealth then
+        hum.Health = hum.MaxHealth
+    end
+    -- Принудительно ставим Running, если не бежим и не прыгаем
+    pcall(function()
+        if hum:GetState() ~= Enum.HumanoidStateType.Running
+           and hum:GetState() ~= Enum.HumanoidStateType.Jumping
+           and hum:GetState() ~= Enum.HumanoidStateType.Freefall then
+            hum:ChangeState(Enum.HumanoidStateType.Running)
+        end
+    end)
+end
+
 local function stopAirbreak()
     if not enabled and not character then return end
     enabled = false
@@ -83,7 +140,6 @@ local function stopAirbreak()
     if stepConnection then stepConnection:Disconnect(); stepConnection = nil end
     if addedConnection then addedConnection:Disconnect(); addedConnection = nil end
 
-    -- Restore only the character instance that was actually modified.
     if root and root.Parent and originalAnchored ~= nil then
         root.Anchored = originalAnchored
     end
@@ -104,6 +160,7 @@ local function stopAirbreak()
         stateLabel.Text = "OFF  •  обычное управление не изменено"
         stateLabel.TextColor3 = muted
     end
+    disableHealthProtection()
 end
 
 local function mobileMoveVector()
@@ -130,6 +187,7 @@ local function startAirbreak()
     character, root = current, currentRoot
     originalAnchored = root.Anchored
     enabled = true
+    enableHealthProtection()  -- ★ включаем защиту
     if UserInputService.TouchEnabled then
         pcall(function()
             local scripts = player:FindFirstChild("PlayerScripts")
@@ -140,7 +198,6 @@ local function startAirbreak()
     for _, descendant in ipairs(character:GetDescendants()) do rememberPart(descendant) end
     addedConnection = character.DescendantAdded:Connect(rememberPart)
 
-    -- Runtime hook: collisions are overridden only while Airbreak is active.
     stepConnection = RunService.Stepped:Connect(function()
         if not alive or not enabled or player.Character ~= character or not root.Parent then
             stopAirbreak()
@@ -150,6 +207,8 @@ local function startAirbreak()
         for part in pairs(partCollisions) do
             if part.Parent then part.CanCollide = false else partCollisions[part] = nil end
         end
+        -- ★ Поддерживаем HP
+        maintainHealth(humanoid)
     end)
 
     RunService:BindToRenderStep(renderName, Enum.RenderPriority.Camera.Value + 1, function(dt)
@@ -187,6 +246,8 @@ local function startAirbreak()
             local displacement = direction.Unit * speed * math.min(dt, 0.1)
             character:PivotTo(character:GetPivot() + displacement)
         end
+        -- ★ Каждый кадр держим HP и Running state
+        maintainHealth(humanoid)
     end)
 
     animate(toggle, {BackgroundColor3 = Color3.fromRGB(64, 101, 65)})
@@ -213,6 +274,7 @@ stopFly = function()
         stateLabel.Text = "OFF  •  обычное управление не изменено"
         stateLabel.TextColor3 = muted
     end
+    disableHealthProtection()
 end
 
 local function startFly()
@@ -229,6 +291,7 @@ local function startFly()
     character, root = current, currentRoot
     originalAnchored = root.Anchored
     flyEnabled = true
+    enableHealthProtection()  -- ★ включаем защиту
     if UserInputService.TouchEnabled then
         pcall(function()
             local scripts = player:FindFirstChild("PlayerScripts")
@@ -263,6 +326,8 @@ local function startFly()
         if direction.Magnitude > 0 then
             character:PivotTo(character:GetPivot() + direction.Unit * speed * math.min(dt, 0.1))
         end
+        -- ★ Каждый кадр держим HP и Running state
+        maintainHealth(humanoid)
     end)
     if upButton then upButton.Visible = true end
     if downButton then downButton.Visible = true end
@@ -511,4 +576,4 @@ end
 resize()
 if workspace.CurrentCamera then connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), resize) end
 
-print("[Nexus Airbreak] Loaded; N = show/hide")
+print("[Nexus Airbreak v2] Loaded; HP protection active; N = show/hide")
