@@ -1,5 +1,5 @@
--- Nexus Airbreak v4: Position spoof + godmode + HP protection
--- N toggles panel, E/Q vertical (PC), touch up/down buttons.
+-- Nexus Airbreak v5: Position spoof + godmode + teleport (cursor / nearest / player list)
+-- N = panel, SPACE/SHIFT = vertical, T = TP cursor, Y = TP nearest
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -21,33 +21,30 @@ local alive = true
 local enabled = false
 local flyEnabled = false
 local speed = 35
-local godmode = true                       -- ★ включён по умолчанию
+local godmode = true
 local character, root, originalAnchored
 local connections = {}
 local renderName = "NexusAirbreak_" .. tostring(player.UserId)
 local flyRenderName = "NexusFly_" .. tostring(player.UserId)
-local panel, dim, mini, toggle, toggleKnob, flyToggle, flyToggleKnob, godToggle, godToggleKnob, stateLabel, speedBox
+local panel, dim, mini
+local toggle, toggleKnob, flyToggle, flyToggleKnob, godToggle, godToggleKnob
+local stateLabel, speedBox
 local upHeld, downHeld = false, false
 local upButton, downButton
 local mobileControls
+local playerListFrame, playerListLayout, playerListButtons = nil, nil, {}
 
 -- ═══════════ STATE ═══════════
 local ghost, ghostPrimary
 local hiddenParts = {}
 local savedCameraSubject
 local healthConn, healthHeartbeat
-local savedAnchored, savedPos
-local charConnections = {}
+local savedAnchored
+local ghostStartPos  -- запоминаем, где был призрак при старте
 
 local function connect(signal, callback)
     local c = signal:Connect(callback)
     table.insert(connections, c)
-    return c
-end
-
-local function connectChar(signal, callback)
-    local c = signal:Connect(callback)
-    table.insert(charConnections, c)
     return c
 end
 
@@ -66,11 +63,28 @@ local background = Color3.fromRGB(17, 20, 25)
 local surface = Color3.fromRGB(26, 30, 37)
 local text = Color3.fromRGB(237, 241, 245)
 local muted = Color3.fromRGB(151, 160, 173)
+local danger = Color3.fromRGB(239, 116, 119)
 
 local gui = create("ScreenGui", {
     Name = "SuperGuiModern", ResetOnSpawn = false, IgnoreGuiInset = false,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, CoreGui)
+
+-- ═══════════ RAYCAST / GROUND ═══════════
+
+local function getGroundPosition(position)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignore = {}
+    if character then table.insert(ignore, character) end
+    if ghost then table.insert(ignore, ghost) end
+    params.FilterDescendantsInstances = ignore
+
+    local origin = Vector3.new(position.X, position.Y + 10, position.Z)
+    local ray = workspace:Raycast(origin, Vector3.new(0, -2000, 0), params)
+    if ray then return Vector3.new(position.X, ray.Position.Y + 3.5, position.Z) end
+    return position
+end
 
 -- ═══════════ GODMODE ═══════════
 
@@ -78,20 +92,17 @@ local function enableGodmode(char)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    -- Огромное HP
     pcall(function()
         hum.MaxHealth = 1e9
         hum.Health = 1e9
     end)
 
-    -- Отключаем состояния падения/рэгдолла/PlatformStand
     pcall(function()
         hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
         hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
         hum:SetStateEnabled(Enum.HumanoidStateType.PlatformStanding, false)
     end)
 
-    -- Восстанавливаем HP на любое изменение
     if healthConn then healthConn:Disconnect() end
     healthConn = hum:GetPropertyChangedSignal("Health"):Connect(function()
         if godmode and hum.Parent and hum.Health < hum.MaxHealth then
@@ -99,14 +110,12 @@ local function enableGodmode(char)
         end
     end)
 
-    -- Подстраховка через Heartbeat
     if healthHeartbeat then healthHeartbeat:Disconnect() end
     healthHeartbeat = RunService.Heartbeat:Connect(function()
         if not godmode then return end
         if hum.Parent and hum.Health < hum.MaxHealth then
             hum.Health = hum.MaxHealth
         end
-        -- Принудительно Running, чтобы сервер не считал тебя падающим
         pcall(function()
             local s = hum:GetState()
             if s ~= Enum.HumanoidStateType.Running
@@ -123,20 +132,80 @@ local function disableGodmode()
     if healthHeartbeat then healthHeartbeat:Disconnect(); healthHeartbeat = nil end
 end
 
--- ═══════════ SPOOF ═══════════
+-- ═══════════ TELEPORT ═══════════
 
-local function getGroundY(x, z, excludeChar)
+local function teleportCharacter(position, moveGhostToo)
+    local char = player.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local finalPos = getGroundPosition(position)
+    hrp.CFrame = CFrame.new(finalPos)
+
+    if moveGhostToo ~= false and ghost and ghostPrimary and ghostPrimary.Parent then
+        ghost:PivotTo(CFrame.new(finalPos))
+    end
+end
+
+local function teleportToCursor()
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+
+    local screenPoint
+    if UserInputService.TouchEnabled then
+        local vp = camera.ViewportSize
+        screenPoint = Vector2.new(vp.X / 2, vp.Y / 2)
+    else
+        screenPoint = UserInputService:GetMouseLocation()
+    end
+
+    local ray = camera:ViewportPointToRay(screenPoint.X, screenPoint.Y)
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
     local ignore = {}
-    if character then table.insert(ignore, character) end
+    if player.Character then table.insert(ignore, player.Character) end
     if ghost then table.insert(ignore, ghost) end
     params.FilterDescendantsInstances = ignore
 
-    local ray = workspace:Raycast(Vector3.new(x, 500, z), Vector3.new(0, -2000, 0), params)
-    if ray then return ray.Position.Y + 3.5 end
-    return nil
+    local result = workspace:Raycast(ray.Origin, ray.Direction * 10000, params)
+    local target = result and result.Position or (ray.Origin + ray.Direction * 500)
+    teleportCharacter(target)
 end
+
+local function teleportToPlayer(targetPlayer)
+    if not targetPlayer or targetPlayer == player then return end
+    local tChar = targetPlayer.Character
+    if not tChar then return end
+    local tRoot = tChar:FindFirstChild("HumanoidRootPart")
+    if not tRoot then return end
+    teleportCharacter(tRoot.Position + Vector3.new(0, 5, 0))
+end
+
+local function getNearestPlayer()
+    local char = player.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local nearest, dist = nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= player and plr.Character then
+            local h = plr.Character:FindFirstChild("HumanoidRootPart")
+            if h then
+                local d = (hrp.Position - h.Position).Magnitude
+                if d < dist then dist = d; nearest = plr end
+            end
+        end
+    end
+    return nearest
+end
+
+local function teleportToNearest()
+    local n = getNearestPlayer()
+    if n then teleportToPlayer(n) end
+end
+
+-- ═══════════ SPOOF ═══════════
 
 local function hideChar(char)
     hiddenParts = {}
@@ -208,13 +277,12 @@ local function startSpoof(char)
     if not currentRoot then return false end
 
     savedAnchored = currentRoot.Anchored
-    savedPos = currentRoot.CFrame
 
-    -- ★ Ставим настоящего персонажа на НАДЁЖНУЮ землю и якорим
+    -- Прячем настоящего и якорим на месте (никуда не двигаем)
     hideChar(char)
     currentRoot.Anchored = true
 
-    -- Создаём призрака
+    -- Создаём призрака в текущей позиции
     local newGhost, newPrimary = buildGhost(char)
     if not newGhost then return false end
 
@@ -231,8 +299,16 @@ local function startSpoof(char)
     return true
 end
 
-local function stopSpoof()
-    if ghost then pcall(function() ghost:Destroy() end); ghost, ghostPrimary = nil, nil end
+local function stopSpoofAndTeleport()
+    if ghostPrimary and ghostPrimary.Parent and root and root.Parent then
+        -- Телепортируем настоящего персонажа туда, где был призрак
+        local ghostPos = ghostPrimary.Position
+        local finalPos = getGroundPosition(ghostPos)
+        root.CFrame = CFrame.new(finalPos)
+    end
+
+    if ghost then pcall(function() ghost:Destroy() end) end
+    ghost, ghostPrimary = nil, nil
     restoreChar()
 
     local cam = workspace.CurrentCamera
@@ -240,17 +316,6 @@ local function stopSpoof()
         pcall(function() cam.CameraSubject = savedCameraSubject end)
         savedCameraSubject = nil
     end
-end
-
--- Настоящий персонаж всегда на земле, но в той же XZ что и призрак
-local function syncRealCharToGround()
-    if not root or not root.Parent or not ghostPrimary then return end
-    local gp = ghostPrimary.Position
-    local groundY = getGroundY(gp.X, gp.Z)
-    if groundY then
-        root.CFrame = CFrame.new(Vector3.new(gp.X, groundY, gp.Z))
-    end
-    -- Если под призраком пустота — оставляем персонажа на последней безопасной позиции
 end
 
 -- ═══════════ STOP/START ═══════════
@@ -266,7 +331,7 @@ local function stopAirbreak()
     if not enabled and not character then return end
     enabled = false
     pcall(function() RunService:UnbindFromRenderStep(renderName) end)
-    stopSpoof()
+    stopSpoofAndTeleport()
 
     if root and root.Parent then
         root.Anchored = savedAnchored or false
@@ -299,7 +364,7 @@ local function startAirbreak()
     local hum = cur and cur:FindFirstChildOfClass("Humanoid")
     if not curRoot or not hum or hum.Health <= 0 then
         stateLabel.Text = "Нет живого персонажа"
-        stateLabel.TextColor3 = Color3.fromRGB(239, 116, 119)
+        stateLabel.TextColor3 = danger
         return
     end
 
@@ -309,7 +374,7 @@ local function startAirbreak()
     if not startSpoof(cur) then
         enabled = false; character, root = nil, nil
         stateLabel.Text = "Не удалось создать призрака"
-        stateLabel.TextColor3 = Color3.fromRGB(239, 116, 119)
+        stateLabel.TextColor3 = danger
         return
     end
 
@@ -322,18 +387,6 @@ local function startAirbreak()
             if m then mobileControls = require(m):GetControls() end
         end)
     end
-
-    -- Каждый Stepped — синхронизация позиции
-    RunService.Stepped:Connect(function()
-        if not alive or not enabled then return end
-    end)
-
-    connect(RunService.Stepped, function()
-        if not alive or not enabled or player.Character ~= character or not ghostPrimary or not ghostPrimary.Parent then
-            stopAirbreak(); return
-        end
-        syncRealCharToGround()
-    end)
 
     RunService:BindToRenderStep(renderName, Enum.RenderPriority.Camera.Value + 1, function(dt)
         if not alive or not enabled or player.Character ~= character or not ghostPrimary or not ghostPrimary.Parent then
@@ -348,8 +401,8 @@ local function startAirbreak()
         if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - look end
         if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + right end
         if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - right end
-        if UserInputService:IsKeyDown(Enum.KeyCode.E) or upHeld then dir = dir + Vector3.yAxis end
-        if UserInputService:IsKeyDown(Enum.KeyCode.Q) or downHeld then dir = dir - Vector3.yAxis end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) or upHeld then dir = dir + Vector3.yAxis end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or downHeld then dir = dir - Vector3.yAxis end
 
         if UserInputService.TouchEnabled then
             local stick = mobileMoveVector()
@@ -369,7 +422,7 @@ local function startAirbreak()
 
     animate(toggle, {BackgroundColor3 = Color3.fromRGB(64, 101, 65)})
     animate(toggleKnob, {Position = UDim2.fromOffset(27, 4), BackgroundColor3 = accent})
-    stateLabel.Text = "ON  •  godmode + ghost"
+    stateLabel.Text = "ON  •  SPACE/↑ вверх, SHIFT/↓ вниз"
     stateLabel.TextColor3 = accent
 end
 
@@ -377,7 +430,7 @@ stopFly = function()
     if not flyEnabled then return end
     flyEnabled = false
     pcall(function() RunService:UnbindFromRenderStep(flyRenderName) end)
-    stopSpoof()
+    stopSpoofAndTeleport()
     if root and root.Parent then root.Anchored = savedAnchored or false end
     character, root = nil, nil
     mobileControls = nil
@@ -400,7 +453,7 @@ local function startFly()
     local hum = cur and cur:FindFirstChildOfClass("Humanoid")
     if not curRoot or not hum or hum.Health <= 0 then
         stateLabel.Text = "Нет живого персонажа"
-        stateLabel.TextColor3 = Color3.fromRGB(239, 116, 119)
+        stateLabel.TextColor3 = danger
         return
     end
 
@@ -410,7 +463,7 @@ local function startFly()
     if not startSpoof(cur) then
         flyEnabled = false; character, root = nil, nil
         stateLabel.Text = "Ошибка"
-        stateLabel.TextColor3 = Color3.fromRGB(239, 116, 119)
+        stateLabel.TextColor3 = danger
         return
     end
 
@@ -426,13 +479,6 @@ local function startFly()
     if upButton then upButton.Visible = true end
     if downButton then downButton.Visible = true end
 
-    connect(RunService.Stepped, function()
-        if not alive or not flyEnabled or player.Character ~= character or not ghostPrimary or not ghostPrimary.Parent then
-            stopFly(); return
-        end
-        syncRealCharToGround()
-    end)
-
     RunService:BindToRenderStep(flyRenderName, Enum.RenderPriority.Camera.Value + 1, function(dt)
         if not alive or not flyEnabled or player.Character ~= character or not ghostPrimary or not ghostPrimary.Parent then
             stopFly(); return
@@ -445,8 +491,8 @@ local function startFly()
         if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - look end
         if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + right end
         if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - right end
-        if UserInputService:IsKeyDown(Enum.KeyCode.E) or upHeld then dir = dir + Vector3.yAxis end
-        if UserInputService:IsKeyDown(Enum.KeyCode.Q) or downHeld then dir = dir - Vector3.yAxis end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) or upHeld then dir = dir + Vector3.yAxis end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or downHeld then dir = dir - Vector3.yAxis end
         if UserInputService.TouchEnabled then
             local stick = mobileMoveVector()
             local fl = Vector3.new(look.X, 0, look.Z)
@@ -462,7 +508,7 @@ local function startFly()
 
     animate(flyToggle, {BackgroundColor3 = Color3.fromRGB(64, 101, 65)})
     animate(flyToggleKnob, {Position = UDim2.fromOffset(27, 4), BackgroundColor3 = accent})
-    stateLabel.Text = "FLY ON  •  godmode + ghost"
+    stateLabel.Text = "FLY ON  •  SPACE/↑ вверх, SHIFT/↓ вниз"
     stateLabel.TextColor3 = accent
 end
 
@@ -473,8 +519,7 @@ local function shutdown(destroyGui)
     stopFly()
     disableGodmode()
     for _, c in ipairs(connections) do c:Disconnect() end
-    for _, c in ipairs(charConnections) do c:Disconnect() end
-    table.clear(connections); table.clear(charConnections)
+    table.clear(connections)
     if destroyGui ~= false and gui and gui.Parent then gui:Destroy() end
 end
 
@@ -494,7 +539,7 @@ dim = create("Frame", {
 
 panel = create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(420, 500), BackgroundColor3 = background,
+    Size = UDim2.fromOffset(430, 660), BackgroundColor3 = background,
     BorderSizePixel = 0, ClipsDescendants = true,
 }, gui)
 round(panel, 16); border(panel)
@@ -508,7 +553,7 @@ create("TextLabel", {
 }, header)
 create("TextLabel", {
     Position = UDim2.fromOffset(24, 43), Size = UDim2.new(1, -100, 0, 18),
-    BackgroundTransparency = 1, Text = "SPOOF + GODMODE  /  v4", TextColor3 = accent,
+    BackgroundTransparency = 1, Text = "SPOOF + GODMODE + TELEPORT  /  v5", TextColor3 = accent,
     Font = Enum.Font.GothamMedium, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 local close = create("TextButton", {
@@ -524,11 +569,31 @@ create("Frame", {
     BackgroundColor3 = Color3.fromRGB(49, 55, 65), BorderSizePixel = 0,
 }, panel)
 
-local function makeCard(y, h, title, desc)
+-- Скролл для всего содержимого
+local scroll = create("ScrollingFrame", {
+    Position = UDim2.fromOffset(0, 78), Size = UDim2.new(1, 0, 1, -78),
+    BackgroundTransparency = 1, BorderSizePixel = 0,
+    ScrollBarThickness = 3, ScrollBarImageColor3 = accent,
+    CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+}, panel)
+local scrollLayout = create("UIListLayout", {
+    Padding = UDim.new(0, 8),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, scroll)
+create("UIPadding", {
+    PaddingTop = UDim.new(0, 10),
+    PaddingBottom = UDim.new(0, 14),
+    PaddingLeft = UDim.new(0, 20),
+    PaddingRight = UDim.new(0, 20),
+}, scroll)
+
+-- Карточки будут добавляться в scroll
+
+local function makeCard(title, desc, height)
     local c = create("Frame", {
-        Position = UDim2.fromOffset(20, y), Size = UDim2.new(1, -40, 0, h),
-        BackgroundColor3 = surface, BorderSizePixel = 0,
-    }, panel)
+        Size = UDim2.new(1, 0, 0, height or 82), BackgroundColor3 = surface,
+        BorderSizePixel = 0, LayoutOrder = #scroll:GetChildren(),
+    }, scroll)
     round(c, 12); border(c)
     create("TextLabel", {
         Position = UDim2.fromOffset(16, 13), Size = UDim2.new(1, -96, 0, 22),
@@ -540,11 +605,15 @@ local function makeCard(y, h, title, desc)
         BackgroundTransparency = 1, Text = desc, TextColor3 = muted,
         Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
     }, c)
+    return c
+end
+
+local function makeToggleIn(parent)
     local tg = create("TextButton", {
         AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -17, 0.5, 0),
         Size = UDim2.fromOffset(51, 27), BackgroundColor3 = Color3.fromRGB(53, 59, 69),
         BorderSizePixel = 0, Text = "", AutoButtonColor = false,
-    }, c)
+    }, parent)
     round(tg, 14)
     local kn = create("Frame", {
         Position = UDim2.fromOffset(4, 4), Size = UDim2.fromOffset(19, 19),
@@ -554,54 +623,125 @@ local function makeCard(y, h, title, desc)
     return tg, kn
 end
 
-toggle, toggleKnob = makeCard(96, 88, "Airbreak (ghost)", "Сервер видит на земле")
-flyToggle, flyToggleKnob = makeCard(194, 82, "Fly (ghost)", "Полёт без урона")
-godToggle, godToggleKnob = makeCard(286, 82, "Godmode", "Бессмертие + HP restore")
+-- Airbreak
+local airCard = makeCard("Airbreak (ghost)", "Призрак летает, тело стоит на месте", 82)
+toggle, toggleKnob = makeToggleIn(airCard)
 
--- Начальное состояние godmode
+-- Fly
+local flyCard = makeCard("Fly (ghost)", "Свободный полёт призраком", 82)
+flyToggle, flyToggleKnob = makeToggleIn(flyCard)
+
+-- Godmode
+local godCard = makeCard("Godmode", "Бессмертие + HP restore", 82)
+godToggle, godToggleKnob = makeToggleIn(godCard)
 if godmode then
     godToggle.BackgroundColor3 = Color3.fromRGB(64, 101, 65)
     godToggleKnob.Position = UDim2.fromOffset(27, 4)
     godToggleKnob.BackgroundColor3 = accent
 end
 
--- Speed card
-local speedCard = create("Frame", {
-    Position = UDim2.fromOffset(20, 378), Size = UDim2.new(1, -40, 0, 66),
-    BackgroundColor3 = surface, BorderSizePixel = 0,
-}, panel)
-round(speedCard, 12); border(speedCard)
-create("TextLabel", {
-    Position = UDim2.fromOffset(16, 18), Size = UDim2.new(1, -145, 0, 26),
-    BackgroundTransparency = 1, Text = "Скорость полёта", TextColor3 = text,
-    Font = Enum.Font.GothamMedium, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
-}, speedCard)
-
+-- Speed
+local speedCard = makeCard("Скорость полёта", "Скорость призрака", 82)
 local minus = create("TextButton", {
-    Position = UDim2.new(1, -122, 0, 16), Size = UDim2.fromOffset(30, 34),
+    Position = UDim2.new(1, -150, 0, 42), Size = UDim2.fromOffset(30, 30),
     BackgroundColor3 = background, BorderSizePixel = 0, Text = "−",
     TextColor3 = muted, Font = Enum.Font.GothamBold, TextSize = 17,
 }, speedCard)
 speedBox = create("TextBox", {
-    Position = UDim2.new(1, -90, 0, 16), Size = UDim2.fromOffset(55, 34),
+    Position = UDim2.new(1, -118, 0, 42), Size = UDim2.fromOffset(55, 30),
     BackgroundColor3 = background, BorderSizePixel = 0, Text = tostring(speed),
     TextColor3 = text, Font = Enum.Font.GothamBold, TextSize = 12,
     ClearTextOnFocus = false,
 }, speedCard)
 local plus = create("TextButton", {
-    Position = UDim2.new(1, -33, 0, 16), Size = UDim2.fromOffset(30, 34),
+    Position = UDim2.new(1, -61, 0, 42), Size = UDim2.fromOffset(30, 30),
     BackgroundColor3 = background, BorderSizePixel = 0, Text = "+",
     TextColor3 = accent, Font = Enum.Font.GothamBold, TextSize = 17,
 }, speedCard)
 for _, o in ipairs({minus, speedBox, plus}) do round(o, 8) end
 
-stateLabel = create("TextLabel", {
-    Position = UDim2.fromOffset(22, 456), Size = UDim2.new(1, -44, 0, 22),
-    BackgroundTransparency = 1, Text = "OFF  •  обычное управление",
-    TextColor3 = muted, Font = Enum.Font.GothamMedium, TextSize = 11,
-    TextXAlignment = Enum.TextXAlignment.Left,
-}, panel)
+-- ═══════════ TELEPORT CARD ═══════════
+local tpCard = makeCard("Телепорт", "T = к курсору, Y = к ближайшему", 60)
+tpCard.Size = UDim2.new(1, 0, 0, 60)
 
+local function flatBtn(parent, label, x, y, w, h, color)
+    local b = create("TextButton", {
+        Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
+        BackgroundColor3 = color or background, BorderSizePixel = 0,
+        Text = label, TextColor3 = accent, Font = Enum.Font.GothamBold,
+        TextSize = 11, AutoButtonColor = false,
+    }, parent)
+    round(b, 8); border(b)
+    return b
+end
+
+local tpCursorBtn = flatBtn(tpCard, "TP К КУРСОРУ", 16, 14, 175, 34, background)
+tpCursorBtn.TextColor3 = accent
+local tpNearBtn = flatBtn(tpCard, "К БЛИЖАЙШЕМУ", 205, 14, 175, 34, background)
+tpNearBtn.TextColor3 = accent
+
+-- ═══════════ PLAYER LIST CARD ═══════════
+local plCard = makeCard("Игроки", "Тапни имя — телепорт к нему", 200)
+plCard.Size = UDim2.new(1, 0, 0, 200)
+
+playerListFrame = create("ScrollingFrame", {
+    Position = UDim2.fromOffset(12, 60), Size = UDim2.new(1, -24, 0, 130),
+    BackgroundTransparency = 1, BorderSizePixel = 0,
+    ScrollBarThickness = 2, ScrollBarImageColor3 = accent,
+    CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+}, plCard)
+playerListLayout = create("UIListLayout", {
+    Padding = UDim.new(0, 5),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+}, playerListFrame)
+
+local function rebuildPlayerList()
+    for _, b in ipairs(playerListButtons) do b:Destroy() end
+    playerListButtons = {}
+
+    local list = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= player then table.insert(list, plr) end
+    end
+    table.sort(list, function(a, b) return a.Name:lower() < b.Name:lower() end)
+
+    if #list == 0 then
+        local empty = create("TextLabel", {
+            Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1,
+            Text = "Нет других игроков", TextColor3 = muted,
+            Font = Enum.Font.Gotham, TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, playerListFrame)
+        table.insert(playerListButtons, empty)
+        return
+    end
+
+    for _, plr in ipairs(list) do
+        local b = create("TextButton", {
+            Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = background,
+            BorderSizePixel = 0, Text = "  " .. plr.Name,
+            TextColor3 = text, Font = Enum.Font.GothamMedium, TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left, AutoButtonColor = false,
+        }, playerListFrame)
+        round(b, 7)
+        b.Activated:Connect(function() teleportToPlayer(plr) end)
+        table.insert(playerListButtons, b)
+    end
+end
+
+rebuildPlayerList()
+Players.PlayerAdded:Connect(rebuildPlayerList)
+Players.PlayerRemoving:Connect(function() task.defer(rebuildPlayerList) end)
+
+-- ═══════════ STATE LABEL ═══════════
+stateLabel = create("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 22), BackgroundTransparency = 1,
+    Text = "OFF  •  обычное управление",
+    TextColor3 = muted, Font = Enum.Font.GothamMedium, TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Center, LayoutOrder = 99,
+}, scroll)
+
+-- ═══════════ MINI BUTTON ═══════════
 mini = create("TextButton", {
     AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -18, 0, 18),
     Size = UDim2.fromOffset(52, 52), BackgroundColor3 = background,
@@ -609,6 +749,8 @@ mini = create("TextButton", {
     Font = Enum.Font.GothamBold, TextSize = 19, Visible = false,
 }, gui)
 round(mini, 16); border(mini)
+
+-- ═══════════ EVENTS ═══════════
 
 local function setPanelVisible(v) panel.Visible = v; dim.Visible = v; mini.Visible = not v end
 local function setSpeed(v)
@@ -634,14 +776,26 @@ end)
 connect(minus.Activated, function() setSpeed(speed - 5) end)
 connect(plus.Activated, function() setSpeed(speed + 5) end)
 connect(speedBox.FocusLost, function() setSpeed(speedBox.Text) end)
+connect(tpCursorBtn.Activated, teleportToCursor)
+connect(tpNearBtn.Activated, teleportToNearest)
 connect(close.Activated, function() setPanelVisible(false) end)
 connect(mini.Activated, function() setPanelVisible(true) end)
+
 connect(UserInputService.InputBegan, function(input, processed)
-    if processed or UserInputService:GetFocusedTextBox() then return end
-    if input.KeyCode == Enum.KeyCode.N then setPanelVisible(not panel.Visible) end
+    if processed then return end
+    if UserInputService:GetFocusedTextBox() then return end
+    if input.KeyCode == Enum.KeyCode.N then
+        setPanelVisible(not panel.Visible)
+    elseif input.KeyCode == Enum.KeyCode.T then
+        teleportToCursor()
+    elseif input.KeyCode == Enum.KeyCode.Y then
+        teleportToNearest()
+    end
 end)
+
 connect(player.CharacterRemoving, function() stopAirbreak(); stopFly() end)
 
+-- Мобильные кнопки вверх/вниз
 if UserInputService.TouchEnabled then
     local function vbtn(label, y)
         local b = create("TextButton", {
@@ -665,8 +819,6 @@ if UserInputService.TouchEnabled then
     connect(downButton.InputEnded, function() downHeld = false end)
 end
 
--- ═══════════ ХУК НА ЛЮБОЙ УРОН ═══════════
--- Навешиваем на текущего и на новых персонажей
 local function hookChar(char)
     if godmode then enableGodmode(char) end
 end
@@ -679,7 +831,7 @@ end)
 local function resize()
     local cam = workspace.CurrentCamera
     local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
-    scale.Scale = math.clamp(math.min((vp.X - 20) / 420, (vp.Y - 60) / 500), 0.55, 1)
+    scale.Scale = math.clamp(math.min((vp.X - 20) / 430, (vp.Y - 60) / 660), 0.5, 1)
     if UserInputService.TouchEnabled then
         panel.AnchorPoint = Vector2.new(0.5, 0)
         panel.Position = UDim2.new(0.5, 0, 0, 10)
@@ -688,4 +840,4 @@ end
 resize()
 if workspace.CurrentCamera then connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), resize) end
 
-print("[Nexus v4] Spoof + Godmode loaded.")
+print("[Nexus v5] Spoof + Godmode + Teleport loaded. T=TP cursor, Y=TP nearest, N=panel.")
