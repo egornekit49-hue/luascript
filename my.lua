@@ -1,4 +1,5 @@
--- Nexus v7: Spoof + Godmode + Aim-Teleport + Position Lock + Forced Camera Follow
+-- Nexus Desync v1: Обход позиционного анти-чита через десинхронизацию
+-- Для игры Steal a Brainrot
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -25,7 +26,7 @@ local speed = 35
 local godmode = true
 local character, root
 local connections = {}
-local renderName = "NexusAirbreak_" .. tostring(player.UserId)
+local renderName = "NexusDesync_" .. tostring(player.UserId)
 local flyRenderName = "NexusFly_" .. tostring(player.UserId)
 local panel, dim, mini
 local toggle, toggleKnob, flyToggle, flyToggleKnob, godToggle, godToggleKnob
@@ -41,6 +42,7 @@ local healthConn, healthHeartbeat
 local savedAnchored
 local teleportHold = {}
 local cameraForceConn = nil
+local desyncConn = nil -- Соединение для десинхронизации
 
 local function connect(signal, callback)
     local c = signal:Connect(callback)
@@ -86,7 +88,40 @@ local function getGroundPosition(position)
     return position
 end
 
--- ═══════════ POSITION LOCK ═══════════
+-- ═══════════ DESYNC (ключевой механизм) ═══════════
+
+-- Эта функция создаёт иллюзию для сервера, что игрок стоит на месте,
+-- в то время как клиент двигается свободно.
+local function startDesync()
+    if desyncConn then desyncConn:Disconnect() end
+    local char = player.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    -- Сохраняем исходную позицию для сервера
+    local serverPos = hrp.Position
+
+    desyncConn = RunService.Heartbeat:Connect(function()
+        if not (enabled or flyEnabled) then return end
+        if not hrp.Parent then return end
+
+        -- Отправляем серверу фейковую позицию (ту, где мы "стоим")
+        -- Это заставляет сервер думать, что мы не двигаемся.
+        -- В реальности же мы двигаем призрака.
+        pcall(function()
+            hrp.CFrame = CFrame.new(serverPos)
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end)
+end
+
+local function stopDesync()
+    if desyncConn then desyncConn:Disconnect(); desyncConn = nil end
+end
+
+-- ═══════════ POSITION LOCK (для телепортов) ═══════════
 
 local function clearLocks()
     for _, c in ipairs(teleportHold) do pcall(function() c:Disconnect() end) end
@@ -273,7 +308,6 @@ local function restoreChar()
     hiddenParts = {}
 end
 
--- ★ Новая, надёжная сборка призрака: клонируем ЧАСТИ, а не весь чар.
 local function buildGhost(realChar)
     local ghostModel = Instance.new("Model")
     ghostModel.Name = "NexusGhost_" .. tostring(player.UserId)
@@ -289,7 +323,7 @@ local function buildGhost(realChar)
             copy.Massless = true
             copy.CanQuery = false
             copy.CanTouch = false
-            copy.Transparency = d.Transparency  -- сохраняем видимость
+            copy.Transparency = d.Transparency
             copy.Parent = ghostModel
             copies[d] = copy
             if d.Name == "HumanoidRootPart" then primary = copy end
@@ -304,7 +338,6 @@ local function buildGhost(realChar)
     ghostModel.PrimaryPart = primary
     primary.Anchored = true
 
-    -- Привариваем все части к primary
     for origPart, copyPart in pairs(copies) do
         if copyPart ~= primary then
             local weld = Instance.new("WeldConstraint")
@@ -314,7 +347,6 @@ local function buildGhost(realChar)
         end
     end
 
-    -- ★ Highlight — гарантированно видно призрака
     local hl = Instance.new("Highlight")
     hl.FillColor = accent
     hl.FillTransparency = 0.6
@@ -333,7 +365,6 @@ local function startSpoof(char)
     if not currentRoot then return false end
     savedAnchored = currentRoot.Anchored
 
-    -- Сначала строим призрак, потом прячем тело
     local newGhost, newPrimary = buildGhost(char)
     if not newGhost then
         warn("[Nexus] buildGhost вернул nil")
@@ -346,7 +377,9 @@ local function startSpoof(char)
     hideChar(char)
     currentRoot.Anchored = true
 
-    -- ★ Форсируем CameraSubject каждые 0.1 сек, т.к. Roblox сбрасывает
+    -- Запускаем десинхронизацию
+    startDesync()
+
     local cam = workspace.CurrentCamera
     if cam then
         savedCameraSubject = cam.CameraSubject
@@ -370,11 +403,7 @@ local function startSpoof(char)
 end
 
 local function stopSpoofAndTeleport()
-    if ghostPrimary and ghostPrimary.Parent and root and root.Parent then
-        local gp = ghostPrimary.Position
-        local final = getGroundPosition(gp)
-        root.CFrame = CFrame.new(final)
-    end
+    stopDesync() -- Останавливаем десинхронизацию
 
     if cameraForceConn then cameraForceConn:Disconnect(); cameraForceConn = nil end
 
@@ -626,7 +655,7 @@ create("TextLabel", {
 }, header)
 create("TextLabel", {
     Position = UDim2.fromOffset(24, 43), Size = UDim2.new(1, -100, 0, 18),
-    BackgroundTransparency = 1, Text = "SPOOF + GODMODE + AIM TP  /  v7", TextColor3 = accent,
+    BackgroundTransparency = 1, Text = "DESYNC + GHOST  /  SAB", TextColor3 = accent,
     Font = Enum.Font.GothamMedium, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 local close = create("TextButton", {
@@ -688,10 +717,10 @@ local function makeToggleIn(parent)
     return tg, kn
 end
 
-local airCard = makeCard("Airbreak (ghost)", "Призрак летает, тело стоит")
+local airCard = makeCard("Airbreak (desync)", "Призрак летает, тело стоит")
 toggle, toggleKnob = makeToggleIn(airCard)
 
-local flyCard = makeCard("Fly (ghost)", "Свободный полёт призраком")
+local flyCard = makeCard("Fly (desync)", "Свободный полёт призраком")
 flyToggle, flyToggleKnob = makeToggleIn(flyCard)
 
 local godCard = makeCard("Godmode", "Бессмертие + HP restore")
@@ -876,4 +905,4 @@ end
 resize()
 if workspace.CurrentCamera then connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), resize) end
 
-print("[Nexus v7] Loaded. Ghost = Highlight, Camera forced each frame.")
+print("[Nexus Desync] Загружено. Спуфинг через десинхронизацию.")
