@@ -1,5 +1,4 @@
--- Nexus v6: Spoof + Godmode + Aim-Teleport + Position Lock
--- N = panel, SPACE/SHIFT = vertical, T = aim teleport, Y = nearest player
+-- Nexus v7: Spoof + Godmode + Aim-Teleport + Position Lock + Forced Camera Follow
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -35,13 +34,13 @@ local upHeld, downHeld = false, false
 local upButton, downButton
 local mobileControls
 
--- STATE
 local ghost, ghostPrimary
 local hiddenParts = {}
-local savedCameraSubject
+local savedCameraSubject, savedCameraType
 local healthConn, healthHeartbeat
 local savedAnchored
-local teleportHold = {}   -- список активных удержаний позиции
+local teleportHold = {}
+local cameraForceConn = nil
 
 local function connect(signal, callback)
     local c = signal:Connect(callback)
@@ -71,7 +70,7 @@ local gui = create("ScreenGui", {
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, CoreGui)
 
--- ═══════════ GROUND / RAYCAST ═══════════
+-- ═══════════ GROUND ═══════════
 
 local function getGroundPosition(position)
     local params = RaycastParams.new()
@@ -87,7 +86,7 @@ local function getGroundPosition(position)
     return position
 end
 
--- ═══════════ POSITION LOCK (хук координат) ═══════════
+-- ═══════════ POSITION LOCK ═══════════
 
 local function clearLocks()
     for _, c in ipairs(teleportHold) do pcall(function() c:Disconnect() end) end
@@ -96,29 +95,21 @@ end
 
 local function lockPosition(targetCFrame, duration)
     clearLocks()
-
     local char = player.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    -- Мгновенно ставим
     char:PivotTo(targetCFrame)
 
-    -- Останавливаем физику
     pcall(function()
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.AssemblyAngularVelocity = Vector3.zero
     end)
 
-    -- Удерживаем позицию duration секунд
     local endTime = tick() + (duration or 4)
     local c = RunService.Heartbeat:Connect(function()
-        if tick() > endTime or not hrp.Parent then
-            c:Disconnect()
-            return
-        end
-        -- Если сервер откатил — принудительно возвращаем
+        if tick() > endTime or not hrp.Parent then c:Disconnect(); return end
         if (hrp.Position - targetCFrame.Position).Magnitude > 0.5 then
             pcall(function()
                 hrp.CFrame = targetCFrame
@@ -134,31 +125,22 @@ end
 local function enableGodmode(char)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
-
-    pcall(function()
-        hum.MaxHealth = 1e9
-        hum.Health = 1e9
-    end)
-
+    pcall(function() hum.MaxHealth = 1e9; hum.Health = 1e9 end)
     pcall(function()
         hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
         hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
         hum:SetStateEnabled(Enum.HumanoidStateType.PlatformStanding, false)
     end)
-
     if healthConn then healthConn:Disconnect() end
     healthConn = hum:GetPropertyChangedSignal("Health"):Connect(function()
         if godmode and hum.Parent and hum.Health < hum.MaxHealth then
             hum.Health = hum.MaxHealth
         end
     end)
-
     if healthHeartbeat then healthHeartbeat:Disconnect() end
     healthHeartbeat = RunService.Heartbeat:Connect(function()
         if not godmode then return end
-        if hum.Parent and hum.Health < hum.MaxHealth then
-            hum.Health = hum.MaxHealth
-        end
+        if hum.Parent and hum.Health < hum.MaxHealth then hum.Health = hum.MaxHealth end
         pcall(function()
             local s = hum:GetState()
             if s ~= Enum.HumanoidStateType.Running
@@ -175,25 +157,20 @@ local function disableGodmode()
     if healthHeartbeat then healthHeartbeat:Disconnect(); healthHeartbeat = nil end
 end
 
--- ═══════════ AIM CROSSHAIR (прицел) ═══════════
+-- ═══════════ AIM CROSSHAIR ═══════════
 
 local aimGui = create("ScreenGui", {Name = "NexusAim", ResetOnSpawn = false, DisplayOrder = 999, IgnoreGuiInset = true}, CoreGui)
 local aimFrame = create("Frame", {
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(40, 40),
-    BackgroundTransparency = 1,
-    Visible = false,
+    AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(40, 40), BackgroundTransparency = 1, Visible = false,
 }, aimGui)
 create("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = accent, BorderSizePixel = 0}, aimFrame)
 create("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0, 2, 1, 0), BackgroundColor3 = accent, BorderSizePixel = 0}, aimFrame)
 create("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(6, 6), BackgroundColor3 = accent, BorderSizePixel = 0}, aimFrame)
 local aimText = create("TextLabel", {
-    AnchorPoint = Vector2.new(0.5, 0),
-    Position = UDim2.new(0.5, 0, 0.5, 30),
-    Size = UDim2.fromOffset(260, 30),
-    BackgroundColor3 = background, BackgroundTransparency = 0.2,
-    Text = "Наведи курсор и нажми ЛКМ / тапни", TextColor3 = text,
+    AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0.5, 30),
+    Size = UDim2.fromOffset(260, 30), BackgroundColor3 = background, BackgroundTransparency = 0.2,
+    Text = "Наведись и кликни ЛКМ / тапни", TextColor3 = text,
     Font = Enum.Font.GothamMedium, TextSize = 12, BorderSizePixel = 0,
 }, aimFrame)
 round(aimText, 8); border(aimText)
@@ -216,17 +193,9 @@ local function startAimMode()
         if processed then return end
         if input.UserInputType ~= Enum.UserInputType.MouseButton1
            and input.UserInputType ~= Enum.UserInputType.Touch then return end
-
         local cam = workspace.CurrentCamera
         if not cam then stopAimMode(); return end
-
-        local sp
-        if input.UserInputType == Enum.UserInputType.Touch then
-            sp = input.Position
-        else
-            sp = UserInputService:GetMouseLocation()
-        end
-
+        local sp = (input.UserInputType == Enum.UserInputType.Touch) and input.Position or UserInputService:GetMouseLocation()
         local ray = cam:ViewportPointToRay(sp.X, sp.Y)
         local params = RaycastParams.new()
         params.FilterType = Enum.RaycastFilterType.Exclude
@@ -234,18 +203,13 @@ local function startAimMode()
         if player.Character then table.insert(ignore, player.Character) end
         if ghost then table.insert(ignore, ghost) end
         params.FilterDescendantsInstances = ignore
-
         local result = workspace:Raycast(ray.Origin, ray.Direction * 8000, params)
-        local targetPos
-        if result then
-            targetPos = result.Position + Vector3.new(0, 4, 0)
-        else
-            targetPos = ray.Origin + ray.Direction * 500
-        end
-
+        local targetPos = result and (result.Position + Vector3.new(0, 4, 0)) or (ray.Origin + ray.Direction * 500)
         local finalPos = getGroundPosition(targetPos)
         lockPosition(CFrame.new(finalPos), 5)
-
+        if ghost and ghostPrimary and ghostPrimary.Parent then
+            ghost:PivotTo(CFrame.new(finalPos))
+        end
         stopAimMode()
     end)
 end
@@ -258,11 +222,8 @@ local function teleportToPlayer(targetPlayer)
     if not tChar then return end
     local tRoot = tChar:FindFirstChild("HumanoidRootPart")
     if not tRoot then return end
-    local targetPos = tRoot.Position + Vector3.new(3, 3, 3)
-    local finalPos = getGroundPosition(targetPos)
+    local finalPos = getGroundPosition(tRoot.Position + Vector3.new(3, 3, 3))
     lockPosition(CFrame.new(finalPos), 5)
-
-    -- Если активен ghost — двигаем и призрака
     if ghost and ghostPrimary and ghostPrimary.Parent then
         ghost:PivotTo(CFrame.new(finalPos))
     end
@@ -312,45 +273,59 @@ local function restoreChar()
     hiddenParts = {}
 end
 
+-- ★ Новая, надёжная сборка призрака: клонируем ЧАСТИ, а не весь чар.
 local function buildGhost(realChar)
-    local ok, clone = pcall(function() return realChar:Clone() end)
-    if not ok or not clone then return nil end
+    local ghostModel = Instance.new("Model")
+    ghostModel.Name = "NexusGhost_" .. tostring(player.UserId)
 
-    clone.Name = "NexusGhost"
-    for _, d in ipairs(clone:GetDescendants()) do
-        if d:IsA("Humanoid") or d:IsA("Script") or d:IsA("LocalScript")
-           or d:IsA("Animator") or d:IsA("Sound") or d:IsA("ParticleEmitter")
-           or d:IsA("Fire") or d:IsA("Smoke") or d:IsA("Sparkles")
-           or d:IsA("Highlight") or d:IsA("SelectionBox") then
-            d:Destroy()
-        end
-    end
+    local primary
+    local copies = {}
 
-    local primary = clone:FindFirstChild("HumanoidRootPart") or clone:FindFirstChildWhichIsA("BasePart")
-    if not primary then clone:Destroy(); return nil end
-
-    for _, d in ipairs(clone:GetDescendants()) do
+    for _, d in ipairs(realChar:GetDescendants()) do
         if d:IsA("BasePart") then
-            d.Anchored = false
-            d.CanCollide = false
-            d.Massless = true
-            d.CanQuery = false
-            d.CanTouch = false
+            local copy = d:Clone()
+            copy.Anchored = false
+            copy.CanCollide = false
+            copy.Massless = true
+            copy.CanQuery = false
+            copy.CanTouch = false
+            copy.Transparency = d.Transparency  -- сохраняем видимость
+            copy.Parent = ghostModel
+            copies[d] = copy
+            if d.Name == "HumanoidRootPart" then primary = copy end
         end
     end
 
+    if not primary then
+        ghostModel:Destroy()
+        return nil
+    end
+
+    ghostModel.PrimaryPart = primary
     primary.Anchored = true
-    for _, d in ipairs(clone:GetDescendants()) do
-        if d:IsA("BasePart") and d ~= primary then
-            local w = Instance.new("WeldConstraint")
-            w.Part0 = primary
-            w.Part1 = d
-            w.Parent = primary
+
+    -- Привариваем все части к primary
+    for origPart, copyPart in pairs(copies) do
+        if copyPart ~= primary then
+            local weld = Instance.new("WeldConstraint")
+            weld.Part0 = primary
+            weld.Part1 = copyPart
+            weld.Parent = primary
         end
     end
 
-    clone.Parent = workspace
-    return clone, primary
+    -- ★ Highlight — гарантированно видно призрака
+    local hl = Instance.new("Highlight")
+    hl.FillColor = accent
+    hl.FillTransparency = 0.6
+    hl.OutlineColor = accent
+    hl.OutlineTransparency = 0.1
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Adornee = ghostModel
+    hl.Parent = ghostModel
+
+    ghostModel.Parent = workspace
+    return ghostModel, primary
 end
 
 local function startSpoof(char)
@@ -358,32 +333,50 @@ local function startSpoof(char)
     if not currentRoot then return false end
     savedAnchored = currentRoot.Anchored
 
-    -- ★ СНАЧАЛА клон (пока тело ещё видимое!)
+    -- Сначала строим призрак, потом прячем тело
     local newGhost, newPrimary = buildGhost(char)
-    if not newGhost then return false end
+    if not newGhost then
+        warn("[Nexus] buildGhost вернул nil")
+        return false
+    end
 
     newGhost:PivotTo(char:GetPivot())
     ghost, ghostPrimary = newGhost, newPrimary
 
-    -- ★ ПОТОМ скрываем тело
     hideChar(char)
     currentRoot.Anchored = true
 
+    -- ★ Форсируем CameraSubject каждые 0.1 сек, т.к. Roblox сбрасывает
     local cam = workspace.CurrentCamera
     if cam then
         savedCameraSubject = cam.CameraSubject
+        savedCameraType = cam.CameraType
         cam.CameraSubject = newPrimary
+        cam.CameraType = Enum.CameraType.Custom
     end
+
+    if cameraForceConn then cameraForceConn:Disconnect() end
+    cameraForceConn = RunService.Heartbeat:Connect(function()
+        if not (enabled or flyEnabled) then return end
+        if not ghostPrimary or not ghostPrimary.Parent then return end
+        local c = workspace.CurrentCamera
+        if c and c.CameraSubject ~= ghostPrimary then
+            c.CameraSubject = ghostPrimary
+            c.CameraType = Enum.CameraType.Custom
+        end
+    end)
+
     return true
 end
 
 local function stopSpoofAndTeleport()
-    -- Настоящий чар телепортируется на позицию призрака
     if ghostPrimary and ghostPrimary.Parent and root and root.Parent then
         local gp = ghostPrimary.Position
         local final = getGroundPosition(gp)
         root.CFrame = CFrame.new(final)
     end
+
+    if cameraForceConn then cameraForceConn:Disconnect(); cameraForceConn = nil end
 
     if ghost then pcall(function() ghost:Destroy() end) end
     ghost, ghostPrimary = nil, nil
@@ -392,7 +385,9 @@ local function stopSpoofAndTeleport()
     local cam = workspace.CurrentCamera
     if cam and savedCameraSubject then
         pcall(function() cam.CameraSubject = savedCameraSubject end)
+        if savedCameraType then cam.CameraType = savedCameraType end
         savedCameraSubject = nil
+        savedCameraType = nil
     end
 end
 
@@ -410,7 +405,6 @@ local function stopAirbreak()
     enabled = false
     pcall(function() RunService:UnbindFromRenderStep(renderName) end)
     stopSpoofAndTeleport()
-
     if root and root.Parent then root.Anchored = savedAnchored or false end
     character, root = nil, nil
     mobileControls = nil
@@ -449,7 +443,7 @@ local function startAirbreak()
 
     if not startSpoof(cur) then
         enabled = false; character, root = nil, nil
-        stateLabel.Text = "Ошибка создания призрака"
+        stateLabel.Text = "Ошибка призрака"
         stateLabel.TextColor3 = danger
         return
     end
@@ -538,7 +532,7 @@ local function startFly()
 
     if not startSpoof(cur) then
         flyEnabled = false; character, root = nil, nil
-        stateLabel.Text = "Ошибка"
+        stateLabel.Text = "Ошибка призрака"
         stateLabel.TextColor3 = danger
         return
     end
@@ -632,7 +626,7 @@ create("TextLabel", {
 }, header)
 create("TextLabel", {
     Position = UDim2.fromOffset(24, 43), Size = UDim2.new(1, -100, 0, 18),
-    BackgroundTransparency = 1, Text = "SPOOF + GODMODE + AIM TP  /  v6", TextColor3 = accent,
+    BackgroundTransparency = 1, Text = "SPOOF + GODMODE + AIM TP  /  v7", TextColor3 = accent,
     Font = Enum.Font.GothamMedium, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 local close = create("TextButton", {
@@ -694,7 +688,7 @@ local function makeToggleIn(parent)
     return tg, kn
 end
 
-local airCard = makeCard("Airbreak (ghost)", "Призрак летает, тело на месте")
+local airCard = makeCard("Airbreak (ghost)", "Призрак летает, тело стоит")
 toggle, toggleKnob = makeToggleIn(airCard)
 
 local flyCard = makeCard("Fly (ghost)", "Свободный полёт призраком")
@@ -727,9 +721,7 @@ local plus = create("TextButton", {
 }, speedCard)
 for _, o in ipairs({minus, speedBox, plus}) do round(o, 8) end
 
--- Телепорт карточка
 local tpCard = makeCard("Телепорт", "T = прицел, Y = ближайший", 60)
-
 local function flatBtn(parent, label, x, y, w, h)
     local b = create("TextButton", {
         Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
@@ -740,11 +732,9 @@ local function flatBtn(parent, label, x, y, w, h)
     round(b, 8); border(b)
     return b
 end
-
 local tpCursorBtn = flatBtn(tpCard, "TP ПО ПРИЦЕЛУ", 16, 14, 175, 34)
 local tpNearBtn = flatBtn(tpCard, "К БЛИЖАЙШЕМУ", 205, 14, 175, 34)
 
--- Список игроков
 local plCard = makeCard("Игроки", "Тапни имя — телепорт", 200)
 local playerListFrame = create("ScrollingFrame", {
     Position = UDim2.fromOffset(12, 60), Size = UDim2.new(1, -24, 0, 130),
@@ -758,24 +748,20 @@ local playerListButtons = {}
 local function rebuildPlayerList()
     for _, b in ipairs(playerListButtons) do b:Destroy() end
     playerListButtons = {}
-
     local list = {}
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= player then table.insert(list, plr) end
     end
     table.sort(list, function(a, b) return a.Name:lower() < b.Name:lower() end)
-
     if #list == 0 then
         local empty = create("TextLabel", {
             Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1,
             Text = "Нет других игроков", TextColor3 = muted,
-            Font = Enum.Font.Gotham, TextSize = 11,
-            TextXAlignment = Enum.TextXAlignment.Left,
+            Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
         }, playerListFrame)
         table.insert(playerListButtons, empty)
         return
     end
-
     for _, plr in ipairs(list) do
         local b = create("TextButton", {
             Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = background,
@@ -788,7 +774,6 @@ local function rebuildPlayerList()
         table.insert(playerListButtons, b)
     end
 end
-
 rebuildPlayerList()
 Players.PlayerAdded:Connect(rebuildPlayerList)
 Players.PlayerRemoving:Connect(function() task.defer(rebuildPlayerList) end)
@@ -840,13 +825,9 @@ connect(mini.Activated, function() setPanelVisible(true) end)
 connect(UserInputService.InputBegan, function(input, processed)
     if processed then return end
     if UserInputService:GetFocusedTextBox() then return end
-    if input.KeyCode == Enum.KeyCode.N then
-        setPanelVisible(not panel.Visible)
-    elseif input.KeyCode == Enum.KeyCode.T then
-        startAimMode()
-    elseif input.KeyCode == Enum.KeyCode.Y then
-        teleportToNearest()
-    end
+    if input.KeyCode == Enum.KeyCode.N then setPanelVisible(not panel.Visible)
+    elseif input.KeyCode == Enum.KeyCode.T then startAimMode()
+    elseif input.KeyCode == Enum.KeyCode.Y then teleportToNearest() end
 end)
 
 connect(player.CharacterRemoving, function() stopAirbreak(); stopFly() end)
@@ -895,4 +876,4 @@ end
 resize()
 if workspace.CurrentCamera then connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), resize) end
 
-print("[Nexus v6] Spoof + Godmode + Aim TP + Position Lock loaded.")
+print("[Nexus v7] Loaded. Ghost = Highlight, Camera forced each frame.")
