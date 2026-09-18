@@ -1,5 +1,5 @@
--- Nexus Airbreak v5: Position spoof + godmode + teleport (cursor / nearest / player list)
--- N = panel, SPACE/SHIFT = vertical, T = TP cursor, Y = TP nearest
+-- Nexus v6: Spoof + Godmode + Aim-Teleport + Position Lock
+-- N = panel, SPACE/SHIFT = vertical, T = aim teleport, Y = nearest player
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -16,13 +16,15 @@ if old then
     end
     old:Destroy()
 end
+local oldAim = CoreGui:FindFirstChild("NexusAim")
+if oldAim then oldAim:Destroy() end
 
 local alive = true
 local enabled = false
 local flyEnabled = false
 local speed = 35
 local godmode = true
-local character, root, originalAnchored
+local character, root
 local connections = {}
 local renderName = "NexusAirbreak_" .. tostring(player.UserId)
 local flyRenderName = "NexusFly_" .. tostring(player.UserId)
@@ -32,15 +34,14 @@ local stateLabel, speedBox
 local upHeld, downHeld = false, false
 local upButton, downButton
 local mobileControls
-local playerListFrame, playerListLayout, playerListButtons = nil, nil, {}
 
--- ═══════════ STATE ═══════════
+-- STATE
 local ghost, ghostPrimary
 local hiddenParts = {}
 local savedCameraSubject
 local healthConn, healthHeartbeat
 local savedAnchored
-local ghostStartPos  -- запоминаем, где был призрак при старте
+local teleportHold = {}   -- список активных удержаний позиции
 
 local function connect(signal, callback)
     local c = signal:Connect(callback)
@@ -70,7 +71,7 @@ local gui = create("ScreenGui", {
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, CoreGui)
 
--- ═══════════ RAYCAST / GROUND ═══════════
+-- ═══════════ GROUND / RAYCAST ═══════════
 
 local function getGroundPosition(position)
     local params = RaycastParams.new()
@@ -84,6 +85,48 @@ local function getGroundPosition(position)
     local ray = workspace:Raycast(origin, Vector3.new(0, -2000, 0), params)
     if ray then return Vector3.new(position.X, ray.Position.Y + 3.5, position.Z) end
     return position
+end
+
+-- ═══════════ POSITION LOCK (хук координат) ═══════════
+
+local function clearLocks()
+    for _, c in ipairs(teleportHold) do pcall(function() c:Disconnect() end) end
+    teleportHold = {}
+end
+
+local function lockPosition(targetCFrame, duration)
+    clearLocks()
+
+    local char = player.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    -- Мгновенно ставим
+    char:PivotTo(targetCFrame)
+
+    -- Останавливаем физику
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+
+    -- Удерживаем позицию duration секунд
+    local endTime = tick() + (duration or 4)
+    local c = RunService.Heartbeat:Connect(function()
+        if tick() > endTime or not hrp.Parent then
+            c:Disconnect()
+            return
+        end
+        -- Если сервер откатил — принудительно возвращаем
+        if (hrp.Position - targetCFrame.Position).Magnitude > 0.5 then
+            pcall(function()
+                hrp.CFrame = targetCFrame
+                hrp.AssemblyLinearVelocity = Vector3.zero
+            end)
+        end
+    end)
+    table.insert(teleportHold, c)
 end
 
 -- ═══════════ GODMODE ═══════════
@@ -132,46 +175,82 @@ local function disableGodmode()
     if healthHeartbeat then healthHeartbeat:Disconnect(); healthHeartbeat = nil end
 end
 
+-- ═══════════ AIM CROSSHAIR (прицел) ═══════════
+
+local aimGui = create("ScreenGui", {Name = "NexusAim", ResetOnSpawn = false, DisplayOrder = 999, IgnoreGuiInset = true}, CoreGui)
+local aimFrame = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(40, 40),
+    BackgroundTransparency = 1,
+    Visible = false,
+}, aimGui)
+create("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = accent, BorderSizePixel = 0}, aimFrame)
+create("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0, 2, 1, 0), BackgroundColor3 = accent, BorderSizePixel = 0}, aimFrame)
+create("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(6, 6), BackgroundColor3 = accent, BorderSizePixel = 0}, aimFrame)
+local aimText = create("TextLabel", {
+    AnchorPoint = Vector2.new(0.5, 0),
+    Position = UDim2.new(0.5, 0, 0.5, 30),
+    Size = UDim2.fromOffset(260, 30),
+    BackgroundColor3 = background, BackgroundTransparency = 0.2,
+    Text = "Наведи курсор и нажми ЛКМ / тапни", TextColor3 = text,
+    Font = Enum.Font.GothamMedium, TextSize = 12, BorderSizePixel = 0,
+}, aimFrame)
+round(aimText, 8); border(aimText)
+
+local aimMode = false
+local aimClickConn = nil
+
+local function stopAimMode()
+    aimMode = false
+    aimFrame.Visible = false
+    if aimClickConn then aimClickConn:Disconnect(); aimClickConn = nil end
+end
+
+local function startAimMode()
+    if aimMode then stopAimMode(); return end
+    aimMode = true
+    aimFrame.Visible = true
+
+    aimClickConn = UserInputService.InputBegan:Connect(function(input, processed)
+        if processed then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+           and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+        local cam = workspace.CurrentCamera
+        if not cam then stopAimMode(); return end
+
+        local sp
+        if input.UserInputType == Enum.UserInputType.Touch then
+            sp = input.Position
+        else
+            sp = UserInputService:GetMouseLocation()
+        end
+
+        local ray = cam:ViewportPointToRay(sp.X, sp.Y)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local ignore = {}
+        if player.Character then table.insert(ignore, player.Character) end
+        if ghost then table.insert(ignore, ghost) end
+        params.FilterDescendantsInstances = ignore
+
+        local result = workspace:Raycast(ray.Origin, ray.Direction * 8000, params)
+        local targetPos
+        if result then
+            targetPos = result.Position + Vector3.new(0, 4, 0)
+        else
+            targetPos = ray.Origin + ray.Direction * 500
+        end
+
+        local finalPos = getGroundPosition(targetPos)
+        lockPosition(CFrame.new(finalPos), 5)
+
+        stopAimMode()
+    end)
+end
+
 -- ═══════════ TELEPORT ═══════════
-
-local function teleportCharacter(position, moveGhostToo)
-    local char = player.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    local finalPos = getGroundPosition(position)
-    hrp.CFrame = CFrame.new(finalPos)
-
-    if moveGhostToo ~= false and ghost and ghostPrimary and ghostPrimary.Parent then
-        ghost:PivotTo(CFrame.new(finalPos))
-    end
-end
-
-local function teleportToCursor()
-    local camera = workspace.CurrentCamera
-    if not camera then return end
-
-    local screenPoint
-    if UserInputService.TouchEnabled then
-        local vp = camera.ViewportSize
-        screenPoint = Vector2.new(vp.X / 2, vp.Y / 2)
-    else
-        screenPoint = UserInputService:GetMouseLocation()
-    end
-
-    local ray = camera:ViewportPointToRay(screenPoint.X, screenPoint.Y)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    local ignore = {}
-    if player.Character then table.insert(ignore, player.Character) end
-    if ghost then table.insert(ignore, ghost) end
-    params.FilterDescendantsInstances = ignore
-
-    local result = workspace:Raycast(ray.Origin, ray.Direction * 10000, params)
-    local target = result and result.Position or (ray.Origin + ray.Direction * 500)
-    teleportCharacter(target)
-end
 
 local function teleportToPlayer(targetPlayer)
     if not targetPlayer or targetPlayer == player then return end
@@ -179,14 +258,21 @@ local function teleportToPlayer(targetPlayer)
     if not tChar then return end
     local tRoot = tChar:FindFirstChild("HumanoidRootPart")
     if not tRoot then return end
-    teleportCharacter(tRoot.Position + Vector3.new(0, 5, 0))
+    local targetPos = tRoot.Position + Vector3.new(3, 3, 3)
+    local finalPos = getGroundPosition(targetPos)
+    lockPosition(CFrame.new(finalPos), 5)
+
+    -- Если активен ghost — двигаем и призрака
+    if ghost and ghostPrimary and ghostPrimary.Parent then
+        ghost:PivotTo(CFrame.new(finalPos))
+    end
 end
 
-local function getNearestPlayer()
+local function teleportToNearest()
     local char = player.Character
-    if not char then return nil end
+    if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
+    if not hrp then return end
     local nearest, dist = nil, math.huge
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= player and plr.Character then
@@ -197,12 +283,7 @@ local function getNearestPlayer()
             end
         end
     end
-    return nearest
-end
-
-local function teleportToNearest()
-    local n = getNearestPlayer()
-    if n then teleportToPlayer(n) end
+    if nearest then teleportToPlayer(nearest) end
 end
 
 -- ═══════════ SPOOF ═══════════
@@ -275,36 +356,33 @@ end
 local function startSpoof(char)
     local currentRoot = char:FindFirstChild("HumanoidRootPart")
     if not currentRoot then return false end
-
     savedAnchored = currentRoot.Anchored
 
-    -- Прячем настоящего и якорим на месте (никуда не двигаем)
-    hideChar(char)
-    currentRoot.Anchored = true
-
-    -- Создаём призрака в текущей позиции
+    -- ★ СНАЧАЛА клон (пока тело ещё видимое!)
     local newGhost, newPrimary = buildGhost(char)
     if not newGhost then return false end
 
     newGhost:PivotTo(char:GetPivot())
     ghost, ghostPrimary = newGhost, newPrimary
 
-    -- Камера на призрака
+    -- ★ ПОТОМ скрываем тело
+    hideChar(char)
+    currentRoot.Anchored = true
+
     local cam = workspace.CurrentCamera
     if cam then
         savedCameraSubject = cam.CameraSubject
         cam.CameraSubject = newPrimary
     end
-
     return true
 end
 
 local function stopSpoofAndTeleport()
+    -- Настоящий чар телепортируется на позицию призрака
     if ghostPrimary and ghostPrimary.Parent and root and root.Parent then
-        -- Телепортируем настоящего персонажа туда, где был призрак
-        local ghostPos = ghostPrimary.Position
-        local finalPos = getGroundPosition(ghostPos)
-        root.CFrame = CFrame.new(finalPos)
+        local gp = ghostPrimary.Position
+        local final = getGroundPosition(gp)
+        root.CFrame = CFrame.new(final)
     end
 
     if ghost then pcall(function() ghost:Destroy() end) end
@@ -333,9 +411,7 @@ local function stopAirbreak()
     pcall(function() RunService:UnbindFromRenderStep(renderName) end)
     stopSpoofAndTeleport()
 
-    if root and root.Parent then
-        root.Anchored = savedAnchored or false
-    end
+    if root and root.Parent then root.Anchored = savedAnchored or false end
     character, root = nil, nil
     mobileControls = nil
     upHeld, downHeld = false, false
@@ -373,7 +449,7 @@ local function startAirbreak()
 
     if not startSpoof(cur) then
         enabled = false; character, root = nil, nil
-        stateLabel.Text = "Не удалось создать призрака"
+        stateLabel.Text = "Ошибка создания призрака"
         stateLabel.TextColor3 = danger
         return
     end
@@ -515,12 +591,15 @@ end
 local function shutdown(destroyGui)
     if not alive then return end
     alive = false
+    stopAimMode()
     stopAirbreak()
     stopFly()
     disableGodmode()
+    clearLocks()
     for _, c in ipairs(connections) do c:Disconnect() end
     table.clear(connections)
     if destroyGui ~= false and gui and gui.Parent then gui:Destroy() end
+    if aimGui and aimGui.Parent then aimGui:Destroy() end
 end
 
 local shutdownFunction = Instance.new("BindableFunction")
@@ -539,7 +618,7 @@ dim = create("Frame", {
 
 panel = create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(430, 660), BackgroundColor3 = background,
+    Size = UDim2.fromOffset(430, 640), BackgroundColor3 = background,
     BorderSizePixel = 0, ClipsDescendants = true,
 }, gui)
 round(panel, 16); border(panel)
@@ -553,7 +632,7 @@ create("TextLabel", {
 }, header)
 create("TextLabel", {
     Position = UDim2.fromOffset(24, 43), Size = UDim2.new(1, -100, 0, 18),
-    BackgroundTransparency = 1, Text = "SPOOF + GODMODE + TELEPORT  /  v5", TextColor3 = accent,
+    BackgroundTransparency = 1, Text = "SPOOF + GODMODE + AIM TP  /  v6", TextColor3 = accent,
     Font = Enum.Font.GothamMedium, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 local close = create("TextButton", {
@@ -569,30 +648,22 @@ create("Frame", {
     BackgroundColor3 = Color3.fromRGB(49, 55, 65), BorderSizePixel = 0,
 }, panel)
 
--- Скролл для всего содержимого
 local scroll = create("ScrollingFrame", {
     Position = UDim2.fromOffset(0, 78), Size = UDim2.new(1, 0, 1, -78),
     BackgroundTransparency = 1, BorderSizePixel = 0,
     ScrollBarThickness = 3, ScrollBarImageColor3 = accent,
     CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
 }, panel)
-local scrollLayout = create("UIListLayout", {
-    Padding = UDim.new(0, 8),
-    SortOrder = Enum.SortOrder.LayoutOrder,
-}, scroll)
+create("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder}, scroll)
 create("UIPadding", {
-    PaddingTop = UDim.new(0, 10),
-    PaddingBottom = UDim.new(0, 14),
-    PaddingLeft = UDim.new(0, 20),
-    PaddingRight = UDim.new(0, 20),
+    PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 14),
+    PaddingLeft = UDim.new(0, 20), PaddingRight = UDim.new(0, 20),
 }, scroll)
-
--- Карточки будут добавляться в scroll
 
 local function makeCard(title, desc, height)
     local c = create("Frame", {
         Size = UDim2.new(1, 0, 0, height or 82), BackgroundColor3 = surface,
-        BorderSizePixel = 0, LayoutOrder = #scroll:GetChildren(),
+        BorderSizePixel = 0,
     }, scroll)
     round(c, 12); border(c)
     create("TextLabel", {
@@ -623,16 +694,13 @@ local function makeToggleIn(parent)
     return tg, kn
 end
 
--- Airbreak
-local airCard = makeCard("Airbreak (ghost)", "Призрак летает, тело стоит на месте", 82)
+local airCard = makeCard("Airbreak (ghost)", "Призрак летает, тело на месте")
 toggle, toggleKnob = makeToggleIn(airCard)
 
--- Fly
-local flyCard = makeCard("Fly (ghost)", "Свободный полёт призраком", 82)
+local flyCard = makeCard("Fly (ghost)", "Свободный полёт призраком")
 flyToggle, flyToggleKnob = makeToggleIn(flyCard)
 
--- Godmode
-local godCard = makeCard("Godmode", "Бессмертие + HP restore", 82)
+local godCard = makeCard("Godmode", "Бессмертие + HP restore")
 godToggle, godToggleKnob = makeToggleIn(godCard)
 if godmode then
     godToggle.BackgroundColor3 = Color3.fromRGB(64, 101, 65)
@@ -640,7 +708,6 @@ if godmode then
     godToggleKnob.BackgroundColor3 = accent
 end
 
--- Speed
 local speedCard = makeCard("Скорость полёта", "Скорость призрака", 82)
 local minus = create("TextButton", {
     Position = UDim2.new(1, -150, 0, 42), Size = UDim2.fromOffset(30, 30),
@@ -660,14 +727,13 @@ local plus = create("TextButton", {
 }, speedCard)
 for _, o in ipairs({minus, speedBox, plus}) do round(o, 8) end
 
--- ═══════════ TELEPORT CARD ═══════════
-local tpCard = makeCard("Телепорт", "T = к курсору, Y = к ближайшему", 60)
-tpCard.Size = UDim2.new(1, 0, 0, 60)
+-- Телепорт карточка
+local tpCard = makeCard("Телепорт", "T = прицел, Y = ближайший", 60)
 
-local function flatBtn(parent, label, x, y, w, h, color)
+local function flatBtn(parent, label, x, y, w, h)
     local b = create("TextButton", {
         Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h),
-        BackgroundColor3 = color or background, BorderSizePixel = 0,
+        BackgroundColor3 = background, BorderSizePixel = 0,
         Text = label, TextColor3 = accent, Font = Enum.Font.GothamBold,
         TextSize = 11, AutoButtonColor = false,
     }, parent)
@@ -675,26 +741,20 @@ local function flatBtn(parent, label, x, y, w, h, color)
     return b
 end
 
-local tpCursorBtn = flatBtn(tpCard, "TP К КУРСОРУ", 16, 14, 175, 34, background)
-tpCursorBtn.TextColor3 = accent
-local tpNearBtn = flatBtn(tpCard, "К БЛИЖАЙШЕМУ", 205, 14, 175, 34, background)
-tpNearBtn.TextColor3 = accent
+local tpCursorBtn = flatBtn(tpCard, "TP ПО ПРИЦЕЛУ", 16, 14, 175, 34)
+local tpNearBtn = flatBtn(tpCard, "К БЛИЖАЙШЕМУ", 205, 14, 175, 34)
 
--- ═══════════ PLAYER LIST CARD ═══════════
-local plCard = makeCard("Игроки", "Тапни имя — телепорт к нему", 200)
-plCard.Size = UDim2.new(1, 0, 0, 200)
-
-playerListFrame = create("ScrollingFrame", {
+-- Список игроков
+local plCard = makeCard("Игроки", "Тапни имя — телепорт", 200)
+local playerListFrame = create("ScrollingFrame", {
     Position = UDim2.fromOffset(12, 60), Size = UDim2.new(1, -24, 0, 130),
     BackgroundTransparency = 1, BorderSizePixel = 0,
     ScrollBarThickness = 2, ScrollBarImageColor3 = accent,
     CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
 }, plCard)
-playerListLayout = create("UIListLayout", {
-    Padding = UDim.new(0, 5),
-    SortOrder = Enum.SortOrder.LayoutOrder,
-}, playerListFrame)
+create("UIListLayout", {Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder}, playerListFrame)
 
+local playerListButtons = {}
 local function rebuildPlayerList()
     for _, b in ipairs(playerListButtons) do b:Destroy() end
     playerListButtons = {}
@@ -733,7 +793,6 @@ rebuildPlayerList()
 Players.PlayerAdded:Connect(rebuildPlayerList)
 Players.PlayerRemoving:Connect(function() task.defer(rebuildPlayerList) end)
 
--- ═══════════ STATE LABEL ═══════════
 stateLabel = create("TextLabel", {
     Size = UDim2.new(1, 0, 0, 22), BackgroundTransparency = 1,
     Text = "OFF  •  обычное управление",
@@ -741,7 +800,6 @@ stateLabel = create("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Center, LayoutOrder = 99,
 }, scroll)
 
--- ═══════════ MINI BUTTON ═══════════
 mini = create("TextButton", {
     AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -18, 0, 18),
     Size = UDim2.fromOffset(52, 52), BackgroundColor3 = background,
@@ -749,8 +807,6 @@ mini = create("TextButton", {
     Font = Enum.Font.GothamBold, TextSize = 19, Visible = false,
 }, gui)
 round(mini, 16); border(mini)
-
--- ═══════════ EVENTS ═══════════
 
 local function setPanelVisible(v) panel.Visible = v; dim.Visible = v; mini.Visible = not v end
 local function setSpeed(v)
@@ -776,7 +832,7 @@ end)
 connect(minus.Activated, function() setSpeed(speed - 5) end)
 connect(plus.Activated, function() setSpeed(speed + 5) end)
 connect(speedBox.FocusLost, function() setSpeed(speedBox.Text) end)
-connect(tpCursorBtn.Activated, teleportToCursor)
+connect(tpCursorBtn.Activated, function() startAimMode() end)
 connect(tpNearBtn.Activated, teleportToNearest)
 connect(close.Activated, function() setPanelVisible(false) end)
 connect(mini.Activated, function() setPanelVisible(true) end)
@@ -787,7 +843,7 @@ connect(UserInputService.InputBegan, function(input, processed)
     if input.KeyCode == Enum.KeyCode.N then
         setPanelVisible(not panel.Visible)
     elseif input.KeyCode == Enum.KeyCode.T then
-        teleportToCursor()
+        startAimMode()
     elseif input.KeyCode == Enum.KeyCode.Y then
         teleportToNearest()
     end
@@ -795,7 +851,6 @@ end)
 
 connect(player.CharacterRemoving, function() stopAirbreak(); stopFly() end)
 
--- Мобильные кнопки вверх/вниз
 if UserInputService.TouchEnabled then
     local function vbtn(label, y)
         local b = create("TextButton", {
@@ -831,7 +886,7 @@ end)
 local function resize()
     local cam = workspace.CurrentCamera
     local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
-    scale.Scale = math.clamp(math.min((vp.X - 20) / 430, (vp.Y - 60) / 660), 0.5, 1)
+    scale.Scale = math.clamp(math.min((vp.X - 20) / 430, (vp.Y - 60) / 640), 0.5, 1)
     if UserInputService.TouchEnabled then
         panel.AnchorPoint = Vector2.new(0.5, 0)
         panel.Position = UDim2.new(0.5, 0, 0, 10)
@@ -840,4 +895,4 @@ end
 resize()
 if workspace.CurrentCamera then connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), resize) end
 
-print("[Nexus v5] Spoof + Godmode + Teleport loaded. T=TP cursor, Y=TP nearest, N=panel.")
+print("[Nexus v6] Spoof + Godmode + Aim TP + Position Lock loaded.")
