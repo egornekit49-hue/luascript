@@ -19,13 +19,15 @@ end
 
 local alive = true
 local enabled = false
+local flyEnabled = false
 local speed = 35
 local character, root, originalAnchored
 local partCollisions = {}
 local stepConnection, addedConnection
 local connections = {}
 local renderName = "NexusAirbreak_" .. tostring(player.UserId)
-local panel, dim, mini, toggle, toggleKnob, stateLabel, speedBox
+local flyRenderName = "NexusFly_" .. tostring(player.UserId)
+local panel, dim, mini, toggle, toggleKnob, flyToggle, flyToggleKnob, stateLabel, speedBox
 local upHeld, downHeld = false, false
 local upButton, downButton
 local mobileControls
@@ -92,8 +94,8 @@ local function stopAirbreak()
     character, root, originalAnchored = nil, nil, nil
     mobileControls = nil
     upHeld, downHeld = false, false
-    if upButton then upButton.Visible = false end
-    if downButton then downButton.Visible = false end
+    if upButton then upButton.Visible = flyEnabled end
+    if downButton then downButton.Visible = flyEnabled end
     if toggle and toggle.Parent then
         animate(toggle, {BackgroundColor3 = Color3.fromRGB(53, 59, 69)})
         animate(toggleKnob, {Position = UDim2.fromOffset(4, 4), BackgroundColor3 = muted})
@@ -112,8 +114,10 @@ local function mobileMoveVector()
     return vector
 end
 
+local stopFly
 local function startAirbreak()
     if enabled then return end
+    if flyEnabled then stopFly() end
     local current = player.Character
     local currentRoot = current and current:FindFirstChild("HumanoidRootPart")
     local humanoid = current and current:FindFirstChildOfClass("Humanoid")
@@ -191,10 +195,88 @@ local function startAirbreak()
     stateLabel.TextColor3 = accent
 end
 
+stopFly = function()
+    if not flyEnabled then return end
+    flyEnabled = false
+    pcall(function() RunService:UnbindFromRenderStep(flyRenderName) end)
+    if root and root.Parent and originalAnchored ~= nil then root.Anchored = originalAnchored end
+    character, root, originalAnchored = nil, nil, nil
+    mobileControls = nil
+    upHeld, downHeld = false, false
+    if upButton then upButton.Visible = false end
+    if downButton then downButton.Visible = false end
+    if flyToggle and flyToggle.Parent then
+        animate(flyToggle, {BackgroundColor3 = Color3.fromRGB(53, 59, 69)})
+        animate(flyToggleKnob, {Position = UDim2.fromOffset(4, 4), BackgroundColor3 = muted})
+    end
+    if stateLabel and stateLabel.Parent then
+        stateLabel.Text = "OFF  •  обычное управление не изменено"
+        stateLabel.TextColor3 = muted
+    end
+end
+
+local function startFly()
+    if flyEnabled then return end
+    if enabled then stopAirbreak() end
+    local current = player.Character
+    local currentRoot = current and current:FindFirstChild("HumanoidRootPart")
+    local humanoid = current and current:FindFirstChildOfClass("Humanoid")
+    if not currentRoot or not humanoid or humanoid.Health <= 0 then
+        stateLabel.Text = "Нет живого персонажа — попробуй после появления"
+        stateLabel.TextColor3 = Color3.fromRGB(239, 116, 119)
+        return
+    end
+    character, root = current, currentRoot
+    originalAnchored = root.Anchored
+    flyEnabled = true
+    if UserInputService.TouchEnabled then
+        pcall(function()
+            local scripts = player:FindFirstChild("PlayerScripts")
+            local module = scripts and scripts:FindFirstChild("PlayerModule")
+            if module then mobileControls = require(module):GetControls() end
+        end)
+    end
+    RunService:BindToRenderStep(flyRenderName, Enum.RenderPriority.Camera.Value + 1, function(dt)
+        if not alive or not flyEnabled or player.Character ~= character or not root.Parent then
+            stopFly()
+            return
+        end
+        root.Anchored = true
+        local camera = workspace.CurrentCamera
+        if not camera then return end
+        local direction = Vector3.zero
+        local look, right = camera.CFrame.LookVector, camera.CFrame.RightVector
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then direction = direction + look end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then direction = direction - look end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then direction = direction + right end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then direction = direction - right end
+        if UserInputService:IsKeyDown(Enum.KeyCode.E) or upHeld then direction = direction + Vector3.yAxis end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Q) or downHeld then direction = direction - Vector3.yAxis end
+        if UserInputService.TouchEnabled then
+            local stick = mobileMoveVector()
+            local flatLook = Vector3.new(look.X, 0, look.Z)
+            local flatRight = Vector3.new(right.X, 0, right.Z)
+            if flatLook.Magnitude > 0 then flatLook = flatLook.Unit end
+            if flatRight.Magnitude > 0 then flatRight = flatRight.Unit end
+            direction = direction + flatRight * stick.X - flatLook * stick.Z
+        end
+        if direction.Magnitude > 0 then
+            character:PivotTo(character:GetPivot() + direction.Unit * speed * math.min(dt, 0.1))
+        end
+    end)
+    if upButton then upButton.Visible = true end
+    if downButton then downButton.Visible = true end
+    animate(flyToggle, {BackgroundColor3 = Color3.fromRGB(64, 101, 65)})
+    animate(flyToggleKnob, {Position = UDim2.fromOffset(27, 4), BackgroundColor3 = accent})
+    stateLabel.Text = "FLY ON  •  E вверх / Q вниз"
+    stateLabel.TextColor3 = accent
+end
+
 local function shutdown(destroyGui)
     if not alive then return end
     alive = false
     stopAirbreak()
+    stopFly()
     for _, connection in ipairs(connections) do connection:Disconnect() end
     table.clear(connections)
     if destroyGui ~= false and gui and gui.Parent then gui:Destroy() end
@@ -213,7 +295,7 @@ dim = create("Frame", {
 }, gui)
 panel = create("Frame", {
     AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(420, 340), BackgroundColor3 = background,
+    Size = UDim2.fromOffset(420, 432), BackgroundColor3 = background,
     BorderSizePixel = 0, ClipsDescendants = true,
 }, gui)
 round(panel, 16)
@@ -272,7 +354,7 @@ toggleKnob = create("Frame", {
 round(toggleKnob, 10)
 
 local speedCard = create("Frame", {
-    Position = UDim2.fromOffset(20, 194), Size = UDim2.new(1, -40, 0, 66),
+    Position = UDim2.fromOffset(20, 286), Size = UDim2.new(1, -40, 0, 66),
     BackgroundColor3 = surface, BorderSizePixel = 0,
 }, panel)
 round(speedCard, 12)
@@ -302,18 +384,46 @@ local plus = create("TextButton", {
 for _, object in ipairs({minus, speedBox, plus}) do round(object, 8) end
 
 stateLabel = create("TextLabel", {
-    Position = UDim2.fromOffset(22, 270), Size = UDim2.new(1, -44, 0, 22),
+    Position = UDim2.fromOffset(22, 362), Size = UDim2.new(1, -44, 0, 22),
     BackgroundTransparency = 1, Text = "OFF  •  обычное управление не изменено",
     TextColor3 = muted, Font = Enum.Font.GothamMedium, TextSize = 11,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, panel)
 create("TextLabel", {
-    Position = UDim2.fromOffset(22, 298), Size = UDim2.new(1, -44, 0, 25),
+    Position = UDim2.fromOffset(22, 390), Size = UDim2.new(1, -44, 0, 25),
     BackgroundTransparency = 1,
     Text = "Клиентский режим: сервер игры может возвращать позицию.",
     TextColor3 = muted, Font = Enum.Font.Gotham, TextSize = 10,
     TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
 }, panel)
+
+local flyCard = create("Frame", {
+    Position = UDim2.fromOffset(20, 194), Size = UDim2.new(1, -40, 0, 82),
+    BackgroundColor3 = surface, BorderSizePixel = 0,
+}, panel)
+round(flyCard, 12)
+border(flyCard)
+create("TextLabel", {
+    Position = UDim2.fromOffset(16, 12), Size = UDim2.new(1, -96, 0, 22),
+    BackgroundTransparency = 1, Text = "Fly", TextColor3 = text,
+    Font = Enum.Font.GothamMedium, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left,
+}, flyCard)
+create("TextLabel", {
+    Position = UDim2.fromOffset(16, 35), Size = UDim2.new(1, -96, 0, 18),
+    BackgroundTransparency = 1, Text = "Свободный полёт без noclip", TextColor3 = muted,
+    Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
+}, flyCard)
+flyToggle = create("TextButton", {
+    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -17, 0.5, 0),
+    Size = UDim2.fromOffset(51, 27), BackgroundColor3 = Color3.fromRGB(53, 59, 69),
+    BorderSizePixel = 0, Text = "", AutoButtonColor = false,
+}, flyCard)
+round(flyToggle, 14)
+flyToggleKnob = create("Frame", {
+    Position = UDim2.fromOffset(4, 4), Size = UDim2.fromOffset(19, 19),
+    BackgroundColor3 = muted, BorderSizePixel = 0,
+}, flyToggle)
+round(flyToggleKnob, 10)
 
 mini = create("TextButton", {
     AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -18, 0, 18),
@@ -339,6 +449,9 @@ end
 connect(toggle.Activated, function()
     if enabled then stopAirbreak() else startAirbreak() end
 end)
+connect(flyToggle.Activated, function()
+    if flyEnabled then stopFly() else startFly() end
+end)
 connect(minus.Activated, function() setSpeed(speed - 5) end)
 connect(plus.Activated, function() setSpeed(speed + 5) end)
 connect(speedBox.FocusLost, function() setSpeed(speedBox.Text) end)
@@ -348,7 +461,10 @@ connect(UserInputService.InputBegan, function(input, processed)
     if processed or UserInputService:GetFocusedTextBox() then return end
     if input.KeyCode == Enum.KeyCode.N then setPanelVisible(not panel.Visible) end
 end)
-connect(player.CharacterRemoving, stopAirbreak)
+connect(player.CharacterRemoving, function()
+    stopAirbreak()
+    stopFly()
+end)
 
 if UserInputService.TouchEnabled then
     local function verticalButton(label, y)
@@ -386,7 +502,7 @@ end
 local function resize()
     local camera = workspace.CurrentCamera
     local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
-    scale.Scale = math.clamp(math.min((viewport.X - 20) / 420, (viewport.Y - 60) / 340), 0.55, 1)
+    scale.Scale = math.clamp(math.min((viewport.X - 20) / 420, (viewport.Y - 60) / 432), 0.55, 1)
     if UserInputService.TouchEnabled then
         panel.AnchorPoint = Vector2.new(0.5, 0)
         panel.Position = UDim2.new(0.5, 0, 0, 10)
