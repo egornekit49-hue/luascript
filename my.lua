@@ -1,5 +1,4 @@
--- Nexus Desync v1: Обход позиционного анти-чита через десинхронизацию
--- Для игры Steal a Brainrot
+-- Nexus Desync v2: Хук метаметода для обхода позиционного анти-чита (Steal a Brainrot)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -42,7 +41,9 @@ local healthConn, healthHeartbeat
 local savedAnchored
 local teleportHold = {}
 local cameraForceConn = nil
-local desyncConn = nil -- Соединение для десинхронизации
+local desyncConn = nil
+local originalIndex -- Для хука метаметода
+local serverFakePosition = CFrame.new() -- Фейковая позиция для сервера
 
 local function connect(signal, callback)
     local c = signal:Connect(callback)
@@ -88,40 +89,62 @@ local function getGroundPosition(position)
     return position
 end
 
--- ═══════════ DESYNC (ключевой механизм) ═══════════
+-- ═══════════ DESYNC (ХУК МЕТАМЕТОДА) ═══════════
 
--- Эта функция создаёт иллюзию для сервера, что игрок стоит на месте,
--- в то время как клиент двигается свободно.
 local function startDesync()
-    if desyncConn then desyncConn:Disconnect() end
     local char = player.Character
     if not char then return end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    -- Сохраняем исходную позицию для сервера
-    local serverPos = hrp.Position
+    -- ★ Запоминаем позицию, которую будет видеть сервер
+    serverFakePosition = hrp.CFrame
 
+    -- ★ ХУК: перехватываем чтение CFrame у HumanoidRootPart
+    -- Когда сервер запрашивает CFrame, мы возвращаем фейковую позицию
+    originalIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
+        -- Если это не наш персонаж и не его HumanoidRootPart — пропускаем
+        if checkcaller() then
+            return originalIndex(self, key)
+        end
+
+        if self == hrp and key == "CFrame" then
+            -- ★ Возвращаем фейковую позицию (там, где мы "стоим" для сервера)
+            return serverFakePosition
+        end
+
+        return originalIndex(self, key)
+    end))
+
+    -- ★ Heartbeat: обновляем фейковую позицию и заставляем сервер думать, что мы ходим
     desyncConn = RunService.Heartbeat:Connect(function()
         if not (enabled or flyEnabled) then return end
         if not hrp.Parent then return end
 
-        -- Отправляем серверу фейковую позицию (ту, где мы "стоим")
-        -- Это заставляет сервер думать, что мы не двигаемся.
-        -- В реальности же мы двигаем призрака.
-        pcall(function()
-            hrp.CFrame = CFrame.new(serverPos)
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-        end)
+        -- ★ Состояние Running — сервер думает, что мы идём
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function()
+                if hum:GetState() ~= Enum.HumanoidStateType.Running then
+                    hum:ChangeState(Enum.HumanoidStateType.Running)
+                end
+            end)
+        end
     end)
 end
 
 local function stopDesync()
     if desyncConn then desyncConn:Disconnect(); desyncConn = nil end
+    -- ★ Восстанавливаем оригинальный метаметод
+    if originalIndex then
+        pcall(function()
+            hookmetamethod(game, "__index", originalIndex)
+        end)
+        originalIndex = nil
+    end
 end
 
--- ═══════════ POSITION LOCK (для телепортов) ═══════════
+-- ═══════════ POSITION LOCK ═══════════
 
 local function clearLocks()
     for _, c in ipairs(teleportHold) do pcall(function() c:Disconnect() end) end
@@ -377,7 +400,6 @@ local function startSpoof(char)
     hideChar(char)
     currentRoot.Anchored = true
 
-    -- Запускаем десинхронизацию
     startDesync()
 
     local cam = workspace.CurrentCamera
@@ -403,7 +425,7 @@ local function startSpoof(char)
 end
 
 local function stopSpoofAndTeleport()
-    stopDesync() -- Останавливаем десинхронизацию
+    stopDesync()
 
     if cameraForceConn then cameraForceConn:Disconnect(); cameraForceConn = nil end
 
@@ -655,7 +677,7 @@ create("TextLabel", {
 }, header)
 create("TextLabel", {
     Position = UDim2.fromOffset(24, 43), Size = UDim2.new(1, -100, 0, 18),
-    BackgroundTransparency = 1, Text = "DESYNC + GHOST  /  SAB", TextColor3 = accent,
+    BackgroundTransparency = 1, Text = "DESYNC HOOK  /  SAB", TextColor3 = accent,
     Font = Enum.Font.GothamMedium, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 local close = create("TextButton", {
@@ -905,4 +927,4 @@ end
 resize()
 if workspace.CurrentCamera then connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), resize) end
 
-print("[Nexus Desync] Загружено. Спуфинг через десинхронизацию.")
+print("[Nexus Desync v2] Загружено. Хук метаметода активирован.")
