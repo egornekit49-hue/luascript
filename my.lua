@@ -1,6 +1,5 @@
--- Nexus Airbreak: client-side runtime movement; no game files are edited.
--- N toggles the panel, E/Q move vertically on PC. Touch has separate up/down buttons.
--- v2: HP protection while flying/airbreak (no fall damage, no anti-cheat drain).
+-- Nexus Airbreak v3: Position spoofing (server sees you on ground, you fly as ghost).
+-- N toggles panel, E/Q vertical (PC), touch has up/down buttons.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -33,10 +32,12 @@ local upHeld, downHeld = false, false
 local upButton, downButton
 local mobileControls
 
--- ★ Защита HP
+-- ═══ SPOOFING STATE ═══
+local ghost = nil
+local ghostPrimary = nil
+local hiddenParts = {}         -- [part] = {transparency, canCollide}
+local savedCameraSubject = nil
 local healthConnection = nil
-local healthProtectionActive = false
-local savedFallDamage = nil
 
 local function connect(signal, callback)
     local connection = signal:Connect(callback)
@@ -82,56 +83,173 @@ local function rememberPart(part)
     end
 end
 
--- ★ Включаем защиту HP
-local function enableHealthProtection()
-    local current = player.Character
-    if not current then return end
-    local hum = current:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
+-- ═══════════════ SPOOFING HELPERS ═══════════════
 
-    healthProtectionActive = true
+local function getGroundPosition(fromPos)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignore = {}
+    if character then table.insert(ignore, character) end
+    if ghost then table.insert(ignore, ghost) end
+    params.FilterDescendantsInstances = ignore
 
-    -- Отключаем состояния падения/рэгдолла, чтобы не получать урон от падения
-    pcall(function()
-        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-        hum:SetStateEnabled(Enum.HumanoidStateType.PlatformStanding, false)
-    end)
-
-    -- Подстраховка: если HP всё же упало — восстанавливаем
-    if healthConnection then healthConnection:Disconnect() end
-    healthConnection = hum.HealthChanged:Connect(function(newHealth)
-        if healthProtectionActive and newHealth < hum.MaxHealth and newHealth > 0 then
-            hum.Health = hum.MaxHealth
-        end
-    end)
+    local origin = Vector3.new(fromPos.X, fromPos.Y + 5, fromPos.Z)
+    local ray = workspace:Raycast(origin, Vector3.new(0, -1000, 0), params)
+    if ray then
+        return ray.Position + Vector3.new(0, 3.5, 0)
+    end
+    -- Если не нашли — используем спавн
+    local spawn = workspace:FindFirstChildOfClass("SpawnLocation")
+    if spawn then return spawn.Position + Vector3.new(0, 4, 0) end
+    return fromPos
 end
 
--- ★ Выключаем защиту HP
-local function disableHealthProtection()
-    healthProtectionActive = false
+local function hideRealCharacter(char)
+    hiddenParts = {}
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            hiddenParts[d] = {transparency = d.Transparency, canCollide = d.CanCollide}
+            d.Transparency = 1
+            d.CanCollide = false
+        elseif d:IsA("Decal") or d:IsA("Texture") then
+            hiddenParts[d] = {transparency = d.Transparency}
+            d.Transparency = 1
+        end
+    end
+end
+
+local function restoreRealCharacter()
+    for d, data in pairs(hiddenParts) do
+        if d.Parent then
+            if data.transparency ~= nil then d.Transparency = data.transparency end
+            if data.canCollide ~= nil then d.CanCollide = data.canCollide end
+        end
+    end
+    hiddenParts = {}
+end
+
+local function createGhost(realChar)
+    local ok, clone = pcall(function() return realChar:Clone() end)
+    if not ok or not clone then return nil end
+
+    clone.Name = "NexusGhost"
+    -- Удаляем всё, что может физически/скриптово влиять
+    for _, d in ipairs(clone:GetDescendants()) do
+        if d:IsA("Humanoid") or d:IsA("Script") or d:IsA("LocalScript")
+           or d:IsA("Animator") or d:IsA("Sound") or d:IsA("ParticleEmitter")
+           or d:IsA("Fire") or d:IsA("Smoke") or d:IsA("Sparkles") then
+            d:Destroy()
+        end
+    end
+
+    local primary = clone:FindFirstChild("HumanoidRootPart") or clone:FindFirstChildWhichIsA("BasePart")
+    if not primary then
+        clone:Destroy()
+        return nil
+    end
+
+    -- Отключаем физику на всех частях
+    for _, d in ipairs(clone:GetDescendants()) do
+        if d:IsA("BasePart") then
+            d.Anchored = false
+            d.CanCollide = false
+            d.Massless = true
+            d.CanQuery = false
+            d.CanTouch = false
+        end
+    end
+
+    -- Замораживаем все через Weld к primary
+    primary.Anchored = true
+    for _, d in ipairs(clone:GetDescendants()) do
+        if d:IsA("BasePart") and d ~= primary then
+            local weld = Instance.new("WeldConstraint")
+            weld.Part0 = primary
+            weld.Part1 = d
+            weld.Parent = primary
+        end
+    end
+
+    clone.Parent = workspace
+    return clone, primary
+end
+
+local function startSpoof(char)
+    local currentRoot = char:FindFirstChild("HumanoidRootPart")
+    if not currentRoot then return false end
+
+    -- 1. Находим безопасную точку на земле
+    local safePos = getGroundPosition(currentRoot.Position)
+
+    -- 2. Прячем настоящего персонажа и ставим на землю
+    hideRealCharacter(char)
+    currentRoot.Anchored = true
+    currentRoot.CFrame = CFrame.new(safePos)
+    originalAnchored = true
+
+    -- 3. Создаём призрака
+    local newGhost, newPrimary = createGhost(char)
+    if not newGhost then return false end
+
+    newGhost:PivotTo(char:GetPivot())
+    ghost = newGhost
+    ghostPrimary = newPrimary
+
+    -- 4. Камера смотрит на призрака
+    local cam = workspace.CurrentCamera
+    if cam then
+        savedCameraSubject = cam.CameraSubject
+        cam.CameraSubject = newPrimary
+    end
+
+    -- 5. Держим HP на всякий случай
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function()
+            hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+            hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        end)
+        if healthConnection then healthConnection:Disconnect() end
+        healthConnection = hum.HealthChanged:Connect(function(h)
+            if (enabled or flyEnabled) and h < hum.MaxHealth and h > 0 then
+                hum.Health = hum.MaxHealth
+            end
+        end)
+    end
+
+    return true
+end
+
+local function stopSpoof()
+    if ghost then
+        pcall(function() ghost:Destroy() end)
+        ghost = nil
+        ghostPrimary = nil
+    end
+
+    restoreRealCharacter()
+
+    local cam = workspace.CurrentCamera
+    if cam and savedCameraSubject then
+        pcall(function() cam.CameraSubject = savedCameraSubject end)
+        savedCameraSubject = nil
+    end
+
     if healthConnection then
         healthConnection:Disconnect()
         healthConnection = nil
     end
 end
 
--- ★ Каждый кадр восстанавливаем HP и ставим состояние "Running"
--- (сервер думает, что ты просто бежишь по земле)
-local function maintainHealth(hum)
-    if not hum or hum.Health <= 0 then return end
-    if hum.Health < hum.MaxHealth then
-        hum.Health = hum.MaxHealth
-    end
-    -- Принудительно ставим Running, если не бежим и не прыгаем
-    pcall(function()
-        if hum:GetState() ~= Enum.HumanoidStateType.Running
-           and hum:GetState() ~= Enum.HumanoidStateType.Jumping
-           and hum:GetState() ~= Enum.HumanoidStateType.Freefall then
-            hum:ChangeState(Enum.HumanoidStateType.Running)
-        end
-    end)
+-- Двигаем настоящего персонажа, чтобы он следовал за призраком по XZ, но был на земле
+local function updateRealCharacterPosition()
+    if not root or not root.Parent or not ghostPrimary then return end
+    local gp = ghostPrimary.Position
+    local safePos = getGroundPosition(gp)
+    root.CFrame = CFrame.new(safePos)
 end
+
+-- ═══════════════ END SPOOFING ═══════════════
 
 local function stopAirbreak()
     if not enabled and not character then return end
@@ -140,8 +258,11 @@ local function stopAirbreak()
     if stepConnection then stepConnection:Disconnect(); stepConnection = nil end
     if addedConnection then addedConnection:Disconnect(); addedConnection = nil end
 
-    if root and root.Parent and originalAnchored ~= nil then
-        root.Anchored = originalAnchored
+    -- Останавливаем спуфинг (вернёт настоящего персонажа)
+    stopSpoof()
+
+    if root and root.Parent then
+        root.Anchored = false
     end
     for part, canCollide in pairs(partCollisions) do
         if part.Parent then part.CanCollide = canCollide end
@@ -150,8 +271,8 @@ local function stopAirbreak()
     character, root, originalAnchored = nil, nil, nil
     mobileControls = nil
     upHeld, downHeld = false, false
-    if upButton then upButton.Visible = flyEnabled end
-    if downButton then downButton.Visible = flyEnabled end
+    if upButton then upButton.Visible = false end
+    if downButton then downButton.Visible = false end
     if toggle and toggle.Parent then
         animate(toggle, {BackgroundColor3 = Color3.fromRGB(53, 59, 69)})
         animate(toggleKnob, {Position = UDim2.fromOffset(4, 4), BackgroundColor3 = muted})
@@ -160,7 +281,6 @@ local function stopAirbreak()
         stateLabel.Text = "OFF  •  обычное управление не изменено"
         stateLabel.TextColor3 = muted
     end
-    disableHealthProtection()
 end
 
 local function mobileMoveVector()
@@ -179,15 +299,23 @@ local function startAirbreak()
     local currentRoot = current and current:FindFirstChild("HumanoidRootPart")
     local humanoid = current and current:FindFirstChildOfClass("Humanoid")
     if not currentRoot or not humanoid or humanoid.Health <= 0 then
-        stateLabel.Text = "Нет живого персонажа — попробуй после появления"
+        stateLabel.Text = "Нет живого персонажа"
         stateLabel.TextColor3 = Color3.fromRGB(239, 116, 119)
         return
     end
 
     character, root = current, currentRoot
-    originalAnchored = root.Anchored
     enabled = true
-    enableHealthProtection()  -- ★ включаем защиту
+
+    -- ★ Запускаем спуфинг
+    if not startSpoof(current) then
+        enabled = false
+        character, root = nil, nil
+        stateLabel.Text = "Не удалось создать призрака"
+        stateLabel.TextColor3 = Color3.fromRGB(239, 116, 119)
+        return
+    end
+
     if UserInputService.TouchEnabled then
         pcall(function()
             local scripts = player:FindFirstChild("PlayerScripts")
@@ -199,20 +327,15 @@ local function startAirbreak()
     addedConnection = character.DescendantAdded:Connect(rememberPart)
 
     stepConnection = RunService.Stepped:Connect(function()
-        if not alive or not enabled or player.Character ~= character or not root.Parent then
+        if not alive or not enabled or player.Character ~= character or not ghostPrimary or not ghostPrimary.Parent then
             stopAirbreak()
             return
         end
-        root.Anchored = true
-        for part in pairs(partCollisions) do
-            if part.Parent then part.CanCollide = false else partCollisions[part] = nil end
-        end
-        -- ★ Поддерживаем HP
-        maintainHealth(humanoid)
+        updateRealCharacterPosition()
     end)
 
     RunService:BindToRenderStep(renderName, Enum.RenderPriority.Camera.Value + 1, function(dt)
-        if not alive or not enabled or player.Character ~= character or not root.Parent then
+        if not alive or not enabled or player.Character ~= character or not ghostPrimary or not ghostPrimary.Parent then
             stopAirbreak()
             return
         end
@@ -237,22 +360,18 @@ local function startAirbreak()
                 if flatLook.Magnitude > 0 then flatLook = flatLook.Unit end
                 if flatRight.Magnitude > 0 then flatRight = flatRight.Unit end
                 direction = direction + flatRight * stick.X - flatLook * stick.Z
-            elseif humanoid.MoveDirection.Magnitude > 0 then
-                direction = direction + humanoid.MoveDirection
             end
         end
 
         if direction.Magnitude > 0 then
             local displacement = direction.Unit * speed * math.min(dt, 0.1)
-            character:PivotTo(character:GetPivot() + displacement)
+            ghost:PivotTo(ghost:GetPivot() + displacement)
         end
-        -- ★ Каждый кадр держим HP и Running state
-        maintainHealth(humanoid)
     end)
 
     animate(toggle, {BackgroundColor3 = Color3.fromRGB(64, 101, 65)})
     animate(toggleKnob, {Position = UDim2.fromOffset(27, 4), BackgroundColor3 = accent})
-    stateLabel.Text = "ON  •  E вверх / Q вниз"
+    stateLabel.Text = "ON  •  призрак активен (сервер видит на земле)"
     stateLabel.TextColor3 = accent
 end
 
@@ -260,7 +379,8 @@ stopFly = function()
     if not flyEnabled then return end
     flyEnabled = false
     pcall(function() RunService:UnbindFromRenderStep(flyRenderName) end)
-    if root and root.Parent and originalAnchored ~= nil then root.Anchored = originalAnchored end
+    stopSpoof()
+    if root and root.Parent then root.Anchored = false end
     character, root, originalAnchored = nil, nil, nil
     mobileControls = nil
     upHeld, downHeld = false, false
@@ -274,7 +394,6 @@ stopFly = function()
         stateLabel.Text = "OFF  •  обычное управление не изменено"
         stateLabel.TextColor3 = muted
     end
-    disableHealthProtection()
 end
 
 local function startFly()
@@ -284,14 +403,21 @@ local function startFly()
     local currentRoot = current and current:FindFirstChild("HumanoidRootPart")
     local humanoid = current and current:FindFirstChildOfClass("Humanoid")
     if not currentRoot or not humanoid or humanoid.Health <= 0 then
-        stateLabel.Text = "Нет живого персонажа — попробуй после появления"
+        stateLabel.Text = "Нет живого персонажа"
         stateLabel.TextColor3 = Color3.fromRGB(239, 116, 119)
         return
     end
     character, root = current, currentRoot
-    originalAnchored = root.Anchored
     flyEnabled = true
-    enableHealthProtection()  -- ★ включаем защиту
+
+    if not startSpoof(current) then
+        flyEnabled = false
+        character, root = nil, nil
+        stateLabel.Text = "Не удалось создать призрака"
+        stateLabel.TextColor3 = Color3.fromRGB(239, 116, 119)
+        return
+    end
+
     if UserInputService.TouchEnabled then
         pcall(function()
             local scripts = player:FindFirstChild("PlayerScripts")
@@ -299,12 +425,22 @@ local function startFly()
             if module then mobileControls = require(module):GetControls() end
         end)
     end
-    RunService:BindToRenderStep(flyRenderName, Enum.RenderPriority.Camera.Value + 1, function(dt)
-        if not alive or not flyEnabled or player.Character ~= character or not root.Parent then
+    if upButton then upButton.Visible = true end
+    if downButton then downButton.Visible = true end
+
+    stepConnection = RunService.Stepped:Connect(function()
+        if not alive or not flyEnabled or player.Character ~= character or not ghostPrimary or not ghostPrimary.Parent then
             stopFly()
             return
         end
-        root.Anchored = true
+        updateRealCharacterPosition()
+    end)
+
+    RunService:BindToRenderStep(flyRenderName, Enum.RenderPriority.Camera.Value + 1, function(dt)
+        if not alive or not flyEnabled or player.Character ~= character or not ghostPrimary or not ghostPrimary.Parent then
+            stopFly()
+            return
+        end
         local camera = workspace.CurrentCamera
         if not camera then return end
         local direction = Vector3.zero
@@ -324,16 +460,13 @@ local function startFly()
             direction = direction + flatRight * stick.X - flatLook * stick.Z
         end
         if direction.Magnitude > 0 then
-            character:PivotTo(character:GetPivot() + direction.Unit * speed * math.min(dt, 0.1))
+            ghost:PivotTo(ghost:GetPivot() + direction.Unit * speed * math.min(dt, 0.1))
         end
-        -- ★ Каждый кадр держим HP и Running state
-        maintainHealth(humanoid)
     end)
-    if upButton then upButton.Visible = true end
-    if downButton then downButton.Visible = true end
+
     animate(flyToggle, {BackgroundColor3 = Color3.fromRGB(64, 101, 65)})
     animate(flyToggleKnob, {Position = UDim2.fromOffset(27, 4), BackgroundColor3 = accent})
-    stateLabel.Text = "FLY ON  •  E вверх / Q вниз"
+    stateLabel.Text = "FLY ON  •  призрак активен"
     stateLabel.TextColor3 = accent
 end
 
@@ -353,6 +486,7 @@ shutdownFunction.OnInvoke = function() shutdown(true) end
 shutdownFunction.Parent = gui
 connect(gui.Destroying, function() shutdown(false) end)
 
+-- ═══════════════ UI ═══════════════
 dim = create("Frame", {
     Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0),
     BackgroundTransparency = UserInputService.TouchEnabled and 0.7 or 1,
@@ -375,7 +509,7 @@ create("TextLabel", {
 }, header)
 create("TextLabel", {
     Position = UDim2.fromOffset(24, 43), Size = UDim2.new(1, -100, 0, 18),
-    BackgroundTransparency = 1, Text = "AIRBREAK  /  CLIENT RUNTIME", TextColor3 = accent,
+    BackgroundTransparency = 1, Text = "SPOOF MODE  /  v3", TextColor3 = accent,
     Font = Enum.Font.GothamMedium, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 local close = create("TextButton", {
@@ -398,12 +532,12 @@ round(card, 12)
 border(card)
 create("TextLabel", {
     Position = UDim2.fromOffset(16, 13), Size = UDim2.new(1, -96, 0, 22),
-    BackgroundTransparency = 1, Text = "Airbreak + noclip", TextColor3 = text,
+    BackgroundTransparency = 1, Text = "Airbreak (ghost mode)", TextColor3 = text,
     Font = Enum.Font.GothamMedium, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left,
 }, card)
 create("TextLabel", {
     Position = UDim2.fromOffset(16, 36), Size = UDim2.new(1, -96, 0, 18),
-    BackgroundTransparency = 1, Text = "Свободный полёт сквозь стены", TextColor3 = muted,
+    BackgroundTransparency = 1, Text = "Сервер видит вас на земле", TextColor3 = muted,
     Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
 }, card)
 toggle = create("TextButton", {
@@ -457,7 +591,7 @@ stateLabel = create("TextLabel", {
 create("TextLabel", {
     Position = UDim2.fromOffset(22, 390), Size = UDim2.new(1, -44, 0, 25),
     BackgroundTransparency = 1,
-    Text = "Клиентский режим: сервер игры может возвращать позицию.",
+    Text = "Spoof: настоящий чар на земле, призрак летает.",
     TextColor3 = muted, Font = Enum.Font.Gotham, TextSize = 10,
     TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
 }, panel)
@@ -470,12 +604,12 @@ round(flyCard, 12)
 border(flyCard)
 create("TextLabel", {
     Position = UDim2.fromOffset(16, 12), Size = UDim2.new(1, -96, 0, 22),
-    BackgroundTransparency = 1, Text = "Fly", TextColor3 = text,
+    BackgroundTransparency = 1, Text = "Fly (ghost mode)", TextColor3 = text,
     Font = Enum.Font.GothamMedium, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left,
 }, flyCard)
 create("TextLabel", {
     Position = UDim2.fromOffset(16, 35), Size = UDim2.new(1, -96, 0, 18),
-    BackgroundTransparency = 1, Text = "Свободный полёт без noclip", TextColor3 = muted,
+    BackgroundTransparency = 1, Text = "Полёт без урона и noclip", TextColor3 = muted,
     Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left,
 }, flyCard)
 flyToggle = create("TextButton", {
@@ -546,14 +680,6 @@ if UserInputService.TouchEnabled then
     end
     upButton = verticalButton("↑", -160)
     downButton = verticalButton("↓", -95)
-    local function setVerticalVisible()
-        upButton.Visible = enabled
-        downButton.Visible = enabled
-    end
-    connect(toggle.Activated, function() task.defer(setVerticalVisible) end)
-    connect(player.CharacterRemoving, function()
-        upButton.Visible, downButton.Visible = false, false
-    end)
     connect(upButton.InputBegan, function(input)
         if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then upHeld = true end
     end)
@@ -576,4 +702,4 @@ end
 resize()
 if workspace.CurrentCamera then connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), resize) end
 
-print("[Nexus Airbreak v2] Loaded; HP protection active; N = show/hide")
+print("[Nexus v3 Spoof] Loaded. Ghost mode active when toggled.")
